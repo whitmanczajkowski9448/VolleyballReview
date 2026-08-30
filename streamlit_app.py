@@ -1,5 +1,10 @@
 import streamlit as st
 
+from services.auth import (
+    refresh_auth_state,
+    render_login,
+    sign_out,
+)
 from services.ui import (
     inject_global_css,
     render_sidebar_brand,
@@ -25,11 +30,28 @@ st.set_page_config(
 
 inject_global_css()
 
+
+# ============================================================
+# AUTHENTICATION
+# ============================================================
+
+auth_user = refresh_auth_state()
+
+if auth_user is None:
+    render_login()
+    st.stop()
+
+
+role = auth_user[
+    "role"
+]
+
+
 render_sidebar_brand()
 
 
 # ============================================================
-# NAVIGATION
+# PAGES AVAILABLE TO EVERY AUTHORIZED USER
 # ============================================================
 
 dashboard_page = st.Page(
@@ -47,13 +69,6 @@ viewer_page = st.Page(
 )
 
 
-editor_page = st.Page(
-    "views/editor.py",
-    title="Tag / Edit",
-    icon=":material/tune:",
-)
-
-
 weekly_report_page = st.Page(
     "views/weekly_report.py",
     title="Weekly Report",
@@ -61,30 +76,86 @@ weekly_report_page = st.Page(
 )
 
 
-dvsport_sync_page = st.Page(
-    "views/dvsport_sync.py",
-    title="DV Sport Sync",
-    icon=":material/sync:",
-)
+navigation_groups = {
+    "REVIEW CENTER": [
+        dashboard_page,
+        viewer_page,
+    ],
+}
+
+
+# ============================================================
+# ADMIN-ONLY PAGES
+# ============================================================
+
+if role == "admin":
+    editor_page = st.Page(
+        "views/editor.py",
+        title="Tag / Edit",
+        icon=":material/tune:",
+    )
+
+    dvsport_sync_page = st.Page(
+        "views/dvsport_sync.py",
+        title="DV Sport Sync",
+        icon=":material/sync:",
+    )
+
+    navigation_groups[
+        "REVIEW CENTER"
+    ].append(
+        editor_page
+    )
+
+    navigation_groups[
+        "REPORTING"
+    ] = [
+        weekly_report_page,
+    ]
+
+    navigation_groups[
+        "SYSTEM"
+    ] = [
+        dvsport_sync_page,
+    ]
 
 
 navigation = st.navigation(
-    {
-        "REVIEW CENTER": [
-            dashboard_page,
-            viewer_page,
-            editor_page,
-        ],
-
-        "REPORTING": [
-            weekly_report_page,
-        ],
-
-        "SYSTEM": [
-            dvsport_sync_page,
-        ],
-    }
+    navigation_groups
 )
+
+
+# ============================================================
+# SIGNED-IN USER / LOGOUT
+# ============================================================
+
+with st.sidebar:
+    st.divider()
+
+    role_label = (
+        "Admin"
+        if role == "admin"
+        else "Viewer"
+    )
+
+    st.caption(
+        (
+            f"Signed in as "
+            f"{auth_user.get('email', '')}"
+        )
+    )
+
+    st.caption(
+        f"Access: {role_label}"
+    )
+
+    if st.button(
+        "Log Out",
+        use_container_width=True,
+        key="volleyreview_logout",
+    ):
+        sign_out()
+        st.rerun()
 
 
 render_sidebar_footer()

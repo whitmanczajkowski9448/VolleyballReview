@@ -5,6 +5,7 @@ import requests
 import streamlit as st
 
 from services.database import get_supabase
+from services.auth import is_admin
 from services.ui import (
     render_page_header,
     render_section_label,
@@ -1615,12 +1616,13 @@ if normalized_play_type(
         )
 
     with action_email:
-        render_email_challenge_button(
-            play,
-            top_video_angles,
-            supabase,
-            "viewer",
-        )
+        if is_admin():
+            render_email_challenge_button(
+                play,
+                top_video_angles,
+                supabase,
+                "viewer",
+            )
 
 
 # ============================================================

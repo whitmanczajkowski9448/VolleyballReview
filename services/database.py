@@ -1,20 +1,21 @@
-import streamlit as st
-from supabase import create_client
+from services.auth import (
+    get_authenticated_client,
+)
 
 
-@st.cache_resource
 def get_supabase():
     """
-    Return the shared Supabase client using Streamlit secrets.
+    Return the currently authenticated user's Supabase client.
 
-    Required .streamlit/secrets.toml values:
-        SUPABASE_URL
-        SUPABASE_KEY
+    The previous cached/global client should not be used once
+    user authentication is enabled because a cached client can
+    be shared between Streamlit sessions.
     """
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
+    client = get_authenticated_client()
 
-    return create_client(
-        url,
-        key,
-    )
+    if client is None:
+        raise RuntimeError(
+            "No authenticated Supabase session is available."
+        )
+
+    return client

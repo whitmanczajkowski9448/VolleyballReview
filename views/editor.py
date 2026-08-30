@@ -4,6 +4,7 @@ import streamlit as st
 from datetime import date, datetime, timedelta
 
 from services.database import get_supabase
+from services.auth import require_admin, is_admin
 from services.ui import (
     render_page_header,
     render_section_label,
@@ -23,6 +24,8 @@ from services.challenge_email import (
 # ============================================================
 # PAGE
 # ============================================================
+
+require_admin()
 
 render_page_header(
     "Tag / Edit",
@@ -1585,12 +1588,13 @@ if is_challenge:
         )
 
     with action_email:
-        render_email_challenge_button(
-            play,
-            top_video_angles,
-            supabase,
-            "editor",
-        )
+        if is_admin():
+            render_email_challenge_button(
+                play,
+                top_video_angles,
+                supabase,
+                "editor",
+            )
 
 
 # ============================================================

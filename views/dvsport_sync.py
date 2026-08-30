@@ -3,6 +3,7 @@ from datetime import date
 import streamlit as st
 
 from services.database import get_supabase
+from services.auth import require_admin
 from services.dvsport_sync import (
     DEFAULT_END_DATE,
     DEFAULT_START_DATE,
@@ -21,6 +22,8 @@ from services.ui import (
 # ============================================================
 # HEADER
 # ============================================================
+
+require_admin()
 
 render_page_header(
     "DV Sport Sync",

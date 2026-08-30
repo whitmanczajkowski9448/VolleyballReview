@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from services.database import get_supabase
+from services.auth import require_admin
 from services.ui import (
     render_empty,
     render_kpi,
@@ -15,6 +16,8 @@ from services.ui import (
 # ============================================================
 # PAGE
 # ============================================================
+
+require_admin()
 
 render_page_header(
     "Weekly Coordinator Report",
