@@ -101,6 +101,12 @@ if role == "admin":
         icon=":material/sync:",
     )
 
+    manage_users_page = st.Page(
+        "views/manage_users.py",
+        title="Manage Users",
+        icon=":material/manage_accounts:",
+    )
+
     navigation_groups[
         "REVIEW CENTER"
     ].append(
@@ -117,6 +123,7 @@ if role == "admin":
         "SYSTEM"
     ] = [
         dvsport_sync_page,
+        manage_users_page,
     ]
 
 
