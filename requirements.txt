@@ -1,0 +1,7 @@
+streamlit
+pandas
+supabase
+requests
+tqdm
+browser-cookie3
+altair
