@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import streamlit as st
 from supabase import create_client
 
@@ -481,15 +483,66 @@ def render_login():
         unsafe_allow_html=True,
     )
 
-    st.markdown(
-        "# NCAA Women's Volleyball Review"
+    app_root = (
+        Path(__file__)
+        .resolve()
+        .parent
+        .parent
     )
 
-    st.caption(
-        (
-            "Authorized access only. Sign in with the "
-            "email and password assigned to your account."
-        )
+    logo_path = (
+        app_root
+        / "assets"
+        / "ncaa-wvblogo.png"
+    )
+
+    logo_left, logo_center, logo_right = st.columns(
+        [
+            1.0,
+            1.6,
+            1.0,
+        ]
+    )
+
+    with logo_center:
+        if logo_path.exists():
+            st.image(
+                str(
+                    logo_path
+                ),
+                use_container_width=True,
+            )
+
+    st.markdown(
+        """
+        <div style="
+            text-align:center;
+            margin-top:0.4rem;
+            margin-bottom:0.25rem;
+        ">
+            <div style="
+                font-size:2rem;
+                font-weight:800;
+                letter-spacing:-0.03em;
+            ">
+                NCAA Women's Volleyball Review
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+        <div style="
+            text-align:center;
+            color:#9CB0C8;
+            margin-bottom:1.4rem;
+        ">
+            Authorized access only
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
     with st.container(
