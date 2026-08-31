@@ -3,14 +3,15 @@ from urllib.parse import urlencode
 import streamlit as st
 
 from services.challenge_download import (
-    challenge_download_filename,
     clean_text,
     clean_value,
     format_seconds,
-    has_usable_video_url,
-    prepare_challenge_zip,
 )
 
+
+# ============================================================
+# RECIPIENTS
+# ============================================================
 
 def load_saved_recipients(
     supabase,
@@ -20,8 +21,13 @@ def load_saved_recipients(
             supabase
             .table("email_recipients")
             .select("*")
-            .eq("active", True)
-            .order("name")
+            .eq(
+                "active",
+                True,
+            )
+            .order(
+                "name"
+            )
             .execute()
         )
 
@@ -31,27 +37,39 @@ def load_saved_recipients(
         return []
 
 
-def recipient_label(recipient):
+def recipient_label(
+    recipient,
+):
     name = (
         clean_text(
-            recipient.get("name")
+            recipient.get(
+                "name"
+            )
         )
         or clean_text(
-            recipient.get("email")
+            recipient.get(
+                "email"
+            )
         )
         or "Recipient"
     )
 
     email = clean_text(
-        recipient.get("email")
+        recipient.get(
+            "email"
+        )
     )
 
     conference = clean_text(
-        recipient.get("conference")
+        recipient.get(
+            "conference"
+        )
     )
 
     group_name = clean_text(
-        recipient.get("group_name")
+        recipient.get(
+            "group_name"
+        )
     )
 
     details = [
@@ -67,7 +85,9 @@ def recipient_label(recipient):
     if details:
         return (
             f"{name} — "
-            + " • ".join(details)
+            + " • ".join(
+                details
+            )
         )
 
     return name
@@ -78,7 +98,9 @@ def default_recipient_ids(
     conference,
 ):
     conference_upper = (
-        clean_text(conference)
+        clean_text(
+            conference
+        )
         .upper()
     )
 
@@ -110,7 +132,9 @@ def default_recipient_ids(
             == conference_upper
         ):
             defaults.append(
-                recipient.get("id")
+                recipient.get(
+                    "id"
+                )
             )
 
     return [
@@ -120,31 +144,47 @@ def default_recipient_ids(
     ]
 
 
-def split_manual_addresses(value):
-    raw = clean_text(value)
+def split_manual_addresses(
+    value,
+):
+    raw = clean_text(
+        value
+    )
 
     if not raw:
         return []
 
     normalized = (
         raw
-        .replace(";", ",")
-        .replace("\n", ",")
+        .replace(
+            ";",
+            ",",
+        )
+        .replace(
+            "\n",
+            ",",
+        )
     )
 
     return [
         item.strip()
-        for item in normalized.split(",")
+        for item in normalized.split(
+            ","
+        )
         if item.strip()
     ]
 
 
-def dedupe_addresses(values):
+def dedupe_addresses(
+    values,
+):
     result = []
     seen = set()
 
     for value in values:
-        email = clean_text(value)
+        email = clean_text(
+            value
+        )
 
         if not email:
             continue
@@ -154,26 +194,176 @@ def dedupe_addresses(values):
         if key in seen:
             continue
 
-        seen.add(key)
-        result.append(email)
+        seen.add(
+            key
+        )
+
+        result.append(
+            email
+        )
 
     return result
 
 
-def default_subject(play):
+# ============================================================
+# VIDEO LINKS
+# ============================================================
+
+def video_url_present(
+    value,
+):
+    """
+    Deliberately permissive.
+
+    If DV Sport supplied a nonblank URL-like value, include it.
+    We do NOT send an HTTP request, inspect MIME type, or try to
+    pre-validate whether the media server will accept the request.
+    """
+    return bool(
+        clean_text(
+            value
+        )
+    )
+
+
+def video_priority(
+    angle,
+):
+    name = clean_text(
+        angle.get(
+            "angle_name"
+        )
+    ).upper()
+
+    if "PGM" in name:
+        return (
+            0,
+            name,
+        )
+
+    if (
+        "REPLAY OUTPUT"
+        in name
+    ):
+        return (
+            1,
+            name,
+        )
+
+    if "REPLAY" in name:
+        return (
+            2,
+            name,
+        )
+
+    return (
+        3,
+        name,
+    )
+
+
+def ordered_video_links(
+    video_angles,
+):
+    """
+    Return every unique DV Sport video URL, ordered with the
+    primary broadcast/replay angles first.
+    """
+    candidates = [
+        angle
+        for angle in (
+            video_angles
+            or []
+        )
+        if video_url_present(
+            angle.get(
+                "video_url"
+            )
+        )
+    ]
+
+    candidates = sorted(
+        candidates,
+        key=video_priority,
+    )
+
+    result = []
+    seen_urls = set()
+
+    for index, angle in enumerate(
+        candidates,
+        start=1,
+    ):
+        url = clean_text(
+            angle.get(
+                "video_url"
+            )
+        )
+
+        if not url:
+            continue
+
+        key = url.strip()
+
+        if key in seen_urls:
+            continue
+
+        seen_urls.add(
+            key
+        )
+
+        angle_name = (
+            clean_text(
+                angle.get(
+                    "angle_name"
+                )
+            )
+            or f"Video {index}"
+        )
+
+        result.append(
+            {
+                "name":
+                    angle_name,
+                "url":
+                    url,
+            }
+        )
+
+    return result
+
+
+# ============================================================
+# EMAIL CONTENT
+# ============================================================
+
+def default_subject(
+    play,
+):
     match_name = (
         clean_text(
-            play.get("match_name")
+            play.get(
+                "match_name"
+            )
         )
         or "Match"
     )
 
     set_number = clean_text(
-        play.get("set_number")
+        play.get(
+            "set_number"
+        )
     )
 
     score = clean_text(
-        play.get("score")
+        play.get(
+            "score"
+        )
+    )
+
+    subject = (
+        "Challenge Review"
+        f" | {match_name}"
     )
 
     ending = []
@@ -184,20 +374,77 @@ def default_subject(play):
         )
 
     if score:
-        ending.append(score)
-
-    subject = (
-        f"Challenge Review | "
-        f"{match_name}"
-    )
+        ending.append(
+            score
+        )
 
     if ending:
         subject += (
             " | "
-            + ", ".join(ending)
+            + " • ".join(
+                ending
+            )
         )
 
     return subject
+
+
+def clean_line_value(
+    value,
+):
+    text = clean_text(
+        value
+    )
+
+    return (
+        text
+        if text
+        else "—"
+    )
+
+
+def add_section(
+    lines,
+    title,
+    items,
+):
+    useful_items = [
+        (
+            label,
+            value,
+        )
+        for label, value
+        in items
+        if clean_text(
+            value
+        )
+        and clean_text(
+            value
+        )
+        != "—"
+    ]
+
+    if not useful_items:
+        return
+
+    lines.extend(
+        [
+            title.upper(),
+            "─" * 42,
+        ]
+    )
+
+    for label, value in useful_items:
+        lines.append(
+            (
+                f"• {label}: "
+                f"{value}"
+            )
+        )
+
+    lines.append(
+        ""
+    )
 
 
 def email_body(
@@ -210,139 +457,203 @@ def email_body(
     include_review_tags,
     include_reviewer_notes,
     include_weekly_note,
-    include_video_links,
     video_angles,
 ):
+    """
+    Gmail compose URLs accept plain text, not true HTML.
+
+    This deliberately uses clean Unicode typography and compact
+    sections so the resulting Gmail draft feels modern without
+    displaying raw HTML tags.
+    """
     lines = []
 
-    if clean_text(custom_message):
+    match_name = clean_value(
+        play.get(
+            "match_name"
+        ),
+        "Challenge Review",
+    )
+
+    match_date = clean_text(
+        play.get(
+            "match_date"
+        )
+    )
+
+    conference = clean_text(
+        play.get(
+            "conference"
+        )
+    )
+
+    set_number = clean_text(
+        play.get(
+            "set_number"
+        )
+    )
+
+    score = clean_text(
+        play.get(
+            "score"
+        )
+    )
+
+    hero_meta = [
+        item
+        for item in [
+            match_date,
+            conference,
+            (
+                f"Set {set_number}"
+                if set_number
+                else ""
+            ),
+            (
+                f"Score {score}"
+                if score
+                else ""
+            ),
+        ]
+        if item
+    ]
+
+    lines.extend(
+        [
+            "NCAA WOMEN'S VOLLEYBALL • CHALLENGE REVIEW",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            match_name,
+        ]
+    )
+
+    if hero_meta:
+        lines.append(
+            " • ".join(
+                hero_meta
+            )
+        )
+
+    lines.append(
+        ""
+    )
+
+    if clean_text(
+        custom_message
+    ):
         lines.extend(
             [
                 clean_text(
                     custom_message
                 ),
                 "",
+                "──────────────────────────────────────────",
+                "",
             ]
         )
 
     if include_basic:
-        lines.extend(
-            [
-                "CHALLENGE INFORMATION",
-                "---------------------",
-                (
-                    "Match: "
-                    + clean_value(
-                        play.get(
-                            "match_name"
-                        )
+        record_use = (
+            "UNUSABLE — EXCLUDED FROM ANALYSIS / REPORTS"
+            if play.get(
+                "is_unusable"
+            )
+            is True
+            else "Usable"
+        )
+
+        basic_items = [
+            (
+                "Challenging team",
+                clean_line_value(
+                    play.get(
+                        "challenging_team"
                     )
                 ),
-                (
-                    "Date: "
-                    + clean_value(
-                        play.get(
-                            "match_date"
-                        )
+            ),
+            (
+                "DV Sport challenge type",
+                clean_line_value(
+                    play.get(
+                        "challenge_type"
                     )
                 ),
+            ),
+            (
+                "Record use",
+                record_use,
+            ),
+        ]
+
+        if (
+            play.get(
+                "is_unusable"
+            )
+            is True
+        ):
+            basic_items.append(
                 (
-                    "Conference: "
-                    + clean_value(
-                        play.get(
-                            "conference"
-                        )
-                    )
-                ),
-                (
-                    "Set: "
-                    + clean_value(
-                        play.get(
-                            "set_number"
-                        )
-                    )
-                ),
-                (
-                    "Score: "
-                    + clean_value(
-                        play.get(
-                            "score"
-                        )
-                    )
-                ),
-                (
-                    "Challenging Team: "
-                    + clean_value(
-                        play.get(
-                            "challenging_team"
-                        )
-                    )
-                ),
-                (
-                    "DV Sport Challenge Type: "
-                    + clean_value(
-                        play.get(
-                            "challenge_type"
-                        )
-                    )
-                ),
-                (
-                    "Record Use: "
-                    + (
-                        "UNUSABLE — EXCLUDED FROM ANALYSIS / REPORTS"
-                        if play.get(
-                            "is_unusable"
-                        ) is True
-                        else "Usable"
-                    )
-                ),
-                (
-                    "Unusable Reason: "
-                    + clean_value(
+                    "Unusable reason",
+                    clean_line_value(
                         play.get(
                             "unusable_reason"
                         )
+                    ),
+                )
+            )
+
+            if clean_text(
+                play.get(
+                    "unusable_notes"
+                )
+            ):
+                basic_items.append(
+                    (
+                        "Unusable details",
+                        clean_text(
+                            play.get(
+                                "unusable_notes"
+                            )
+                        ),
                     )
-                    if play.get(
-                        "is_unusable"
-                    ) is True
-                    else ""
-                ),
-                "",
-            ]
+                )
+
+        add_section(
+            lines,
+            "Challenge",
+            basic_items,
         )
 
     if include_crs:
-        lines.extend(
+        add_section(
+            lines,
+            "CRS Classification",
             [
-                "CRS CLASSIFICATION",
-                "------------------",
                 (
-                    "Category: "
-                    + clean_value(
+                    "Category",
+                    clean_line_value(
                         play.get(
                             "crs_category"
                         )
-                    )
+                    ),
                 ),
                 (
-                    "Touch Context: "
-                    + clean_value(
+                    "Touch context",
+                    clean_line_value(
                         play.get(
                             "crs_touch_context"
                         )
-                    )
+                    ),
                 ),
                 (
-                    "Original Decision: "
-                    + clean_value(
+                    "Original decision",
+                    clean_line_value(
                         play.get(
                             "crs_original_decision"
                         )
-                    )
+                    ),
                 ),
-                "",
-            ]
+            ],
         )
 
     if include_result:
@@ -352,49 +663,58 @@ def email_body(
 
         changed_text = (
             "Yes"
-            if changed_value is True
+            if changed_value
+            is True
             else "No"
-            if changed_value is False
+            if changed_value
+            is False
             else "—"
         )
 
-        lines.extend(
+        add_section(
+            lines,
+            "Challenge Result",
             [
-                "CHALLENGE RESULT",
-                "----------------",
                 (
-                    "Outcome: "
-                    + clean_value(
+                    "Outcome",
+                    clean_line_value(
                         play.get(
                             "crs_outcome"
                         )
                         or play.get(
                             "challenge_result"
                         )
-                    )
+                    ),
                 ),
                 (
-                    "Original Fault Decision Changed: "
-                    + changed_text
+                    "Original fault decision changed",
+                    changed_text,
                 ),
-                "",
-            ]
+            ],
         )
 
     if include_length:
-        lines.extend(
-            [
-                (
-                    "Challenge Length: "
-                    + format_seconds(
-                        play.get(
-                            "challenge_length_seconds"
-                        )
-                    )
-                ),
-                "",
-            ]
+        challenge_length = format_seconds(
+            play.get(
+                "challenge_length_seconds"
+            )
         )
+
+        if (
+            challenge_length
+            and challenge_length
+            != "—"
+        ):
+            add_section(
+                lines,
+                "Review Timing",
+                [
+                    (
+                        "Challenge length",
+                        challenge_length,
+                    ),
+                ],
+            )
 
     if include_review_tags:
         decision_value = play.get(
@@ -403,10 +723,12 @@ def email_body(
 
         decision_text = (
             "Correct"
-            if decision_value is True
+            if decision_value
+            is True
             else "Incorrect"
-            if decision_value is False
-            else "Not Tagged"
+            if decision_value
+            is False
+            else "Not tagged"
         )
 
         involved_roles = (
@@ -422,130 +744,137 @@ def email_body(
         ):
             involved_roles = [
                 item.strip()
-                for item in clean_text(
+                for item
+                in clean_text(
                     involved_roles
-                ).split(",")
+                ).split(
+                    ","
+                )
                 if item.strip()
             ]
 
-        lines.extend(
+        add_section(
+            lines,
+            "Review Tags",
             [
-                "REVIEW TAGS",
-                "-----------",
                 (
-                    "Review Decision: "
-                    + decision_text
+                    "Review decision",
+                    decision_text,
                 ),
                 (
-                    "Use for Training: "
-                    + (
+                    "Use for training",
+                    (
                         "Yes"
                         if play.get(
                             "use_for_training"
-                        ) is True
+                        )
+                        is True
                         else "No"
-                    )
+                    ),
                 ),
                 (
-                    "Who Was Involved: "
-                    + (
+                    "Who was involved",
+                    (
                         ", ".join(
                             involved_roles
                         )
-                        or "Not Tagged"
-                    )
+                        if involved_roles
+                        else "Not tagged"
+                    ),
                 ),
                 (
-                    "Names / Details: "
-                    + clean_value(
+                    "Names / details",
+                    clean_line_value(
                         play.get(
                             "involved_people"
                         )
-                    )
+                    ),
                 ),
-                "",
-            ]
+            ],
         )
 
     if include_reviewer_notes:
-        lines.extend(
-            [
-                "REVIEWER NOTES",
-                "--------------",
-                clean_value(
-                    play.get(
-                        "reviewer_notes"
-                    )
-                ),
-                "",
-            ]
-        )
-
-    if include_weekly_note:
-        lines.extend(
-            [
-                "WEEKLY COORDINATOR NOTE",
-                "-----------------------",
-                clean_value(
-                    play.get(
-                        "weekly_summary_note"
-                    )
-                ),
-                "",
-            ]
-        )
-
-    if include_video_links:
-        usable = [
-            angle
-            for angle in video_angles
-            if has_usable_video_url(
-                angle.get("video_url")
+        reviewer_notes = clean_text(
+            play.get(
+                "reviewer_notes"
             )
-        ]
-
-        lines.extend(
-            [
-                "VIDEO ANGLES",
-                "------------",
-            ]
         )
 
-        if usable:
-            for angle in usable:
-                lines.extend(
-                    [
-                        (
-                            clean_value(
-                                angle.get(
-                                    "angle_name"
-                                ),
-                                "Video",
-                            )
-                        ),
-                        clean_text(
-                            angle.get(
-                                "video_url"
-                            )
-                        ),
-                        "",
-                    ]
-                )
-        else:
+        if reviewer_notes:
             lines.extend(
                 [
-                    "No usable video URLs are available.",
+                    "REVIEWER NOTES",
+                    "─" * 42,
+                    reviewer_notes,
                     "",
                 ]
             )
 
+    if include_weekly_note:
+        weekly_note = clean_text(
+            play.get(
+                "weekly_summary_note"
+            )
+        )
+
+        if weekly_note:
+            lines.extend(
+                [
+                    "COORDINATOR NOTE",
+                    "─" * 42,
+                    weekly_note,
+                    "",
+                ]
+            )
+
+    # Video links are ALWAYS included.
+    links = ordered_video_links(
+        video_angles
+    )
+
     lines.extend(
         [
+            "VIDEO REPLAY LINKS",
+            "─" * 42,
+        ]
+    )
+
+    if links:
+        for index, video in enumerate(
+            links,
+            start=1,
+        ):
+            lines.extend(
+                [
+                    (
+                        f"{index:02d} • "
+                        f"{video['name']}"
+                    ),
+                    video[
+                        "url"
+                    ],
+                    "",
+                ]
+            )
+
+    else:
+        lines.extend(
+            [
+                "No video URLs are attached to this challenge.",
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "NCAA Women's Volleyball Review",
         ]
     )
 
-    return "\n".join(lines)
+    return "\n".join(
+        lines
+    )
 
 
 def gmail_compose_url(
@@ -556,26 +885,39 @@ def gmail_compose_url(
     body,
 ):
     params = {
-        "view": "cm",
-        "fs": "1",
-        "to": ", ".join(
-            to_addresses
-        ),
-        "cc": ", ".join(
-            cc_addresses
-        ),
-        "bcc": ", ".join(
-            bcc_addresses
-        ),
-        "su": subject,
-        "body": body,
+        "view":
+            "cm",
+        "fs":
+            "1",
+        "to":
+            ", ".join(
+                to_addresses
+            ),
+        "cc":
+            ", ".join(
+                cc_addresses
+            ),
+        "bcc":
+            ", ".join(
+                bcc_addresses
+            ),
+        "su":
+            subject,
+        "body":
+            body,
     }
 
     return (
         "https://mail.google.com/mail/?"
-        + urlencode(params)
+        + urlencode(
+            params
+        )
     )
 
+
+# ============================================================
+# DIALOG
+# ============================================================
 
 @st.dialog(
     "Email Challenge",
@@ -589,25 +931,31 @@ def challenge_email_dialog(
 ):
     st.markdown(
         (
-            f"### "
+            "### "
             f"{clean_value(play.get('match_name'), 'Challenge')}"
         )
     )
 
     summary_parts = [
         clean_text(
-            play.get("conference")
+            play.get(
+                "conference"
+            )
         ),
         (
             f"Set "
             f"{clean_text(play.get('set_number'))}"
             if clean_text(
-                play.get("set_number")
+                play.get(
+                    "set_number"
+                )
             )
             else ""
         ),
         clean_text(
-            play.get("score")
+            play.get(
+                "score"
+            )
         ),
     ]
 
@@ -619,21 +967,56 @@ def challenge_email_dialog(
         )
     )
 
+    video_links = ordered_video_links(
+        video_angles
+    )
+
+    if video_links:
+        st.success(
+            (
+                f"All {len(video_links):,} video "
+                f"link{'' if len(video_links) == 1 else 's'} "
+                "will be included automatically."
+            ),
+            icon="🔗",
+        )
+    else:
+        st.warning(
+            (
+                "No video URLs are currently attached "
+                "to this challenge."
+            ),
+            icon="⚠️",
+        )
+
+    # --------------------------------------------------------
+    # RECIPIENTS
+    # --------------------------------------------------------
+
     recipients = load_saved_recipients(
         supabase
     )
 
     recipient_map = {
-        recipient.get("id"):
+        recipient.get(
+            "id"
+        ):
             recipient
-        for recipient in recipients
-        if recipient.get("id")
+        for recipient
+        in recipients
+        if recipient.get(
+            "id"
+        )
         is not None
     }
 
-    default_ids = default_recipient_ids(
-        recipients,
-        play.get("conference"),
+    default_ids = (
+        default_recipient_ids(
+            recipients,
+            play.get(
+                "conference"
+            ),
+        )
     )
 
     st.markdown(
@@ -648,40 +1031,43 @@ def challenge_email_dialog(
             ),
             default=[
                 item
-                for item in default_ids
+                for item
+                in default_ids
                 if item
                 in recipient_map
             ],
             format_func=lambda item:
                 recipient_label(
-                    recipient_map[item]
+                    recipient_map[
+                        item
+                    ]
                 ),
             key=(
                 f"{key_prefix}_saved_"
                 f"{play['id']}"
             ),
         )
+
     else:
         selected_ids = []
 
         st.info(
             (
                 "No saved recipients are available yet. "
-                "You can still enter addresses manually. "
-                "Run the included Supabase SQL once to enable "
-                "saved recipient defaults."
+                "You can enter addresses manually."
             )
         )
 
-    r1, r2, r3 = st.columns(3)
+    r1, r2, r3 = st.columns(
+        3
+    )
 
     with r1:
         manual_to = st.text_area(
             "Additional To",
-            height=92,
+            height=88,
             placeholder=(
-                "name@example.com, "
-                "other@example.com"
+                "name@example.com"
             ),
             key=(
                 f"{key_prefix}_to_"
@@ -692,10 +1078,8 @@ def challenge_email_dialog(
     with r2:
         manual_cc = st.text_area(
             "CC",
-            height=92,
-            placeholder=(
-                "Optional"
-            ),
+            height=88,
+            placeholder="Optional",
             key=(
                 f"{key_prefix}_cc_"
                 f"{play['id']}"
@@ -705,10 +1089,8 @@ def challenge_email_dialog(
     with r3:
         manual_bcc = st.text_area(
             "BCC",
-            height=92,
-            placeholder=(
-                "Optional"
-            ),
+            height=88,
+            placeholder="Optional",
             key=(
                 f"{key_prefix}_bcc_"
                 f"{play['id']}"
@@ -717,11 +1099,15 @@ def challenge_email_dialog(
 
     saved_to = [
         clean_text(
-            recipient_map[item]
-            .get("email")
+            recipient_map[
+                item
+            ].get(
+                "email"
+            )
         )
         for item in selected_ids
-        if item in recipient_map
+        if item
+        in recipient_map
     ]
 
     to_addresses = dedupe_addresses(
@@ -743,6 +1129,10 @@ def challenge_email_dialog(
         )
     )
 
+    # --------------------------------------------------------
+    # EMAIL
+    # --------------------------------------------------------
+
     st.markdown(
         "#### Email"
     )
@@ -761,10 +1151,9 @@ def challenge_email_dialog(
     custom_message = st.text_area(
         "Message",
         placeholder=(
-            "Optional message to place above the "
-            "challenge information."
+            "Optional note to place at the top of the email."
         ),
-        height=110,
+        height=95,
         key=(
             f"{key_prefix}_message_"
             f"{play['id']}"
@@ -772,14 +1161,16 @@ def challenge_email_dialog(
     )
 
     st.markdown(
-        "#### Include in Email"
+        "#### Include"
     )
 
-    i1, i2 = st.columns(2)
+    i1, i2 = st.columns(
+        2
+    )
 
     with i1:
         include_basic = st.checkbox(
-            "Basic challenge information",
+            "Challenge information",
             value=True,
             key=(
                 f"{key_prefix}_basic_"
@@ -824,42 +1215,36 @@ def challenge_email_dialog(
             ),
         )
 
-        include_reviewer_notes = (
-            st.checkbox(
-                "Reviewer notes",
-                value=False,
-                key=(
-                    f"{key_prefix}_notes_"
-                    f"{play['id']}"
-                ),
-            )
+        include_reviewer_notes = st.checkbox(
+            "Reviewer notes",
+            value=False,
+            key=(
+                f"{key_prefix}_notes_"
+                f"{play['id']}"
+            ),
         )
 
-        include_weekly_note = (
-            st.checkbox(
-                "Weekly coordinator note",
-                value=False,
-                key=(
-                    f"{key_prefix}_weekly_"
-                    f"{play['id']}"
-                ),
-            )
+        include_weekly_note = st.checkbox(
+            "Coordinator note",
+            value=False,
+            key=(
+                f"{key_prefix}_weekly_"
+                f"{play['id']}"
+            ),
         )
 
-        include_video_links = (
-            st.checkbox(
-                "Video angle links",
-                value=False,
-                key=(
-                    f"{key_prefix}_links_"
-                    f"{play['id']}"
-                ),
-                help=(
-                    "These are DV Sport media URLs and may "
-                    "expire. For permanent sharing, attach "
-                    "the Challenge ZIP instead."
-                ),
-            )
+        st.checkbox(
+            "All video replay links",
+            value=True,
+            disabled=True,
+            key=(
+                f"{key_prefix}_all_video_links_"
+                f"{play['id']}"
+            ),
+            help=(
+                "Every unique DV Sport video URL attached "
+                "to this challenge is included automatically."
+            ),
         )
 
     body = email_body(
@@ -878,119 +1263,20 @@ def challenge_email_dialog(
         include_weekly_note=(
             include_weekly_note
         ),
-        include_video_links=(
-            include_video_links
-        ),
         video_angles=video_angles,
     )
 
     with st.expander(
-        "Preview Email Body"
+        "Preview Email",
+        expanded=False,
     ):
-        st.code(
-            body,
-            language=None,
-            wrap_lines=True,
+        st.text_area(
+            "Generated Message",
+            value=body,
+            height=420,
+            disabled=True,
+            label_visibility="collapsed",
         )
-
-    st.markdown(
-        "#### Challenge Files"
-    )
-
-    usable_angles = [
-        angle
-        for angle in video_angles
-        if has_usable_video_url(
-            angle.get("video_url")
-        )
-    ]
-
-    zip_state_key = (
-        f"{key_prefix}_email_zip_"
-        f"{play['id']}"
-    )
-
-    z1, z2 = st.columns(
-        [
-            1.0,
-            1.0,
-        ]
-    )
-
-    with z1:
-        if st.button(
-            "Prepare Challenge ZIP",
-            use_container_width=True,
-            key=(
-                f"{key_prefix}_email_prepare_"
-                f"{play['id']}"
-            ),
-        ):
-            with st.spinner(
-                (
-                    f"Preparing ZIP with "
-                    f"{len(usable_angles):,} video angle"
-                    f"{'' if len(usable_angles) == 1 else 's'}..."
-                )
-            ):
-                try:
-                    st.session_state[
-                        zip_state_key
-                    ] = prepare_challenge_zip(
-                        play,
-                        usable_angles,
-                    )
-
-                except Exception as exc:
-                    st.session_state.pop(
-                        zip_state_key,
-                        None,
-                    )
-                    st.error(
-                        "The Challenge ZIP could not be prepared."
-                    )
-                    st.exception(exc)
-
-    with z2:
-        zip_data = (
-            st.session_state.get(
-                zip_state_key
-            )
-        )
-
-        if zip_data:
-            st.download_button(
-                "Download Challenge ZIP",
-                data=zip_data,
-                file_name=challenge_download_filename(
-                    play
-                ),
-                mime="application/zip",
-                use_container_width=True,
-                type="primary",
-                key=(
-                    f"{key_prefix}_email_download_"
-                    f"{play['id']}"
-                ),
-            )
-        else:
-            st.button(
-                "Download Challenge ZIP",
-                disabled=True,
-                use_container_width=True,
-                key=(
-                    f"{key_prefix}_email_download_disabled_"
-                    f"{play['id']}"
-                ),
-            )
-
-    st.caption(
-        (
-            "Gmail cannot receive a local attachment through a "
-            "compose link. Download the ZIP here, open Gmail, "
-            "then attach the ZIP in Gmail before sending."
-        )
-    )
 
     gmail_url = gmail_compose_url(
         to_addresses=to_addresses,
@@ -1005,7 +1291,7 @@ def challenge_email_dialog(
     action1, action2 = st.columns(
         [
             1.0,
-            2.0,
+            2.25,
         ]
     )
 
@@ -1027,8 +1313,8 @@ def challenge_email_dialog(
             use_container_width=True,
             type="primary",
             help=(
-                "Opens Gmail compose with recipients, "
-                "subject, and body prefilled."
+                "Opens Gmail with recipients, subject, "
+                "review details, and every video link prefilled."
             ),
         )
 
@@ -1036,10 +1322,14 @@ def challenge_email_dialog(
         st.caption(
             (
                 "No To recipient is selected yet. Gmail will "
-                "still open, and you can add one there."
+                "still open and you can add the recipient there."
             )
         )
 
+
+# ============================================================
+# PAGE BUTTON
+# ============================================================
 
 def render_email_challenge_button(
     play,
@@ -1049,7 +1339,9 @@ def render_email_challenge_button(
 ):
     if (
         clean_text(
-            play.get("play_type")
+            play.get(
+                "play_type"
+            )
         ).upper()
         not in {
             "CHALLENGE",
