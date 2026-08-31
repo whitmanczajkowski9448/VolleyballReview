@@ -496,48 +496,61 @@ def render_login():
         / "ncaa-wvblogo.png"
     )
 
-    logo_left, logo_center, logo_right = st.columns(
+    masthead_left, masthead_logo, masthead_text, masthead_right = st.columns(
         [
-            1.0,
-            1.6,
-            1.0,
-        ]
+            1.2,
+            0.7,
+            1.8,
+            1.2,
+        ],
+        vertical_alignment="center",
     )
 
-    with logo_center:
+    with masthead_logo:
         if logo_path.exists():
             st.image(
                 str(
                     logo_path
                 ),
-                use_container_width=True,
+                width=105,
             )
 
-    st.markdown(
-        """
-        <div style="
-            text-align:center;
-            margin-top:0.4rem;
-            margin-bottom:0.25rem;
-        ">
+    with masthead_text:
+        st.markdown(
+            """
             <div style="
-                font-size:2rem;
-                font-weight:800;
-                letter-spacing:-0.03em;
+                line-height:1.0;
+                margin-top:0.1rem;
             ">
-                NCAA Women's Volleyball Review
+                <div style="
+                    font-size:1.55rem;
+                    font-weight:800;
+                    letter-spacing:-0.025em;
+                    white-space:nowrap;
+                ">
+                    NCAA WOMEN'S
+                </div>
+                <div style="
+                    font-size:1.55rem;
+                    font-weight:800;
+                    letter-spacing:-0.025em;
+                    white-space:nowrap;
+                    margin-top:0.22rem;
+                ">
+                    VOLLEYBALL REVIEW
+                </div>
             </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+            """,
+            unsafe_allow_html=True,
+        )
 
     st.markdown(
         """
         <div style="
             text-align:center;
             color:#9CB0C8;
-            margin-bottom:1.4rem;
+            margin-top:0.55rem;
+            margin-bottom:1.25rem;
         ">
             Authorized access only
         </div>
