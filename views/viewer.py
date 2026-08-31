@@ -352,27 +352,23 @@ def clear_focus_mode():
 
 def has_usable_video_url(value):
     """
-    Basic string-level URL screening.
+    Deliberately permissive DV Sport media check.
+
+    If DV Sport supplied a nonblank value, let Streamlit attempt to
+    render it. Do not reject signed URLs because of HEAD/Range/MIME
+    behavior on the media server.
     """
     url = clean_text(value)
 
     if not url:
         return False
 
-    lowered = url.lower()
-
-    if lowered in {
+    return url.lower() not in {
         "none",
         "null",
         "nan",
         "<na>",
-    }:
-        return False
-
-    return (
-        lowered.startswith("http://")
-        or lowered.startswith("https://")
-    )
+    }
 
 
 @st.cache_data(
@@ -381,86 +377,13 @@ def has_usable_video_url(value):
 )
 def video_url_is_playable(url):
     """
-    Verify that a URL actually responds like usable media.
+    Backward-compatible helper used by the page layout.
+
+    We intentionally do NOT perform a network probe here. Signed DV
+    Sport URLs can reject range requests or return unexpected MIME
+    metadata even when the browser can play them successfully.
     """
-    if not has_usable_video_url(url):
-        return False
-
-    try:
-        response = requests.get(
-            url,
-            headers={
-                "Range": "bytes=0-1",
-                "User-Agent": (
-                    "Mozilla/5.0 "
-                    "(Windows NT 10.0; Win64; x64)"
-                ),
-            },
-            stream=True,
-            timeout=8,
-            allow_redirects=True,
-        )
-
-        try:
-            if response.status_code not in {
-                200,
-                206,
-            }:
-                return False
-
-            content_type = (
-                response.headers
-                .get(
-                    "Content-Type",
-                    "",
-                )
-                .split(";")[0]
-                .strip()
-                .lower()
-            )
-
-            if (
-                content_type.startswith("text/")
-                or "html" in content_type
-                or content_type.startswith("image/")
-                or "json" in content_type
-                or "xml" in content_type
-            ):
-                return False
-
-            if (
-                content_type.startswith("video/")
-                or content_type
-                in {
-                    "application/octet-stream",
-                    "application/mp4",
-                    "binary/octet-stream",
-                    "application/vnd.apple.mpegurl",
-                    "application/x-mpegurl",
-                }
-            ):
-                return True
-
-            path_only = (
-                url.split("?")[0]
-                .lower()
-            )
-
-            return path_only.endswith(
-                (
-                    ".mp4",
-                    ".m4v",
-                    ".mov",
-                    ".webm",
-                    ".m3u8",
-                )
-            )
-
-        finally:
-            response.close()
-
-    except requests.RequestException:
-        return False
+    return has_usable_video_url(url)
 
 
 def normalized_angle_name(value):
@@ -534,11 +457,17 @@ def render_video_player(
 
     st.video(url)
 
-    st.link_button(
-        "Open Video",
-        url,
-        use_container_width=True,
-    )
+    if url.lower().startswith(
+        (
+            "http://",
+            "https://",
+        )
+    ):
+        st.link_button(
+            "Open Video",
+            url,
+            use_container_width=True,
+        )
 
 
 
@@ -579,185 +508,117 @@ df = pd.DataFrame(plays)
 
 
 # ============================================================
-# FILTERABLE VIEW QUEUE
+# SIMPLE PLAY BROWSER
 # ============================================================
 
 render_section_label(
-    "Find a Play"
+    "Choose a Play"
 )
 
-# Normalize once for filtering.
-plays = df.to_dict(
-    "records"
-)
+plays = df.to_dict("records")
 
-for play in plays:
-    play["_queue_play_type"] = (
-        normalized_play_type(
-            play.get("play_type")
-        )
+# Normalize once for filtering and display.
+for item in plays:
+    item["_queue_play_type"] = normalized_play_type(
+        item.get("play_type")
     )
-    play["_queue_unusable"] = bool(
-        play.get(
-            "is_unusable"
-        )
+    item["_queue_unusable"] = bool(
+        item.get("is_unusable")
     )
-    play["_queue_status"] = (
-        normalized_review_status(
-            play.get("review_status")
-        )
+    item["_queue_status"] = normalized_review_status(
+        item.get("review_status")
     )
-    play["_queue_outcome"] = (
-        normalize_outcome(play)
+    item["_queue_outcome"] = normalize_outcome(item)
+    item["_queue_category"] = challenge_category_for_queue(item)
+    item["_queue_accuracy"] = decision_accuracy_label(
+        item.get("review_decision_correct")
     )
-    play["_queue_category"] = (
-        challenge_category_for_queue(
-            play
-        )
+    item["_queue_training"] = training_label(
+        item.get("use_for_training")
     )
-    play["_queue_accuracy"] = (
-        decision_accuracy_label(
-            play.get(
-                "review_decision_correct"
-            )
-        )
+    item["_queue_involved_roles"] = involved_roles_list(
+        item.get("involved_roles")
     )
-    play["_queue_training"] = (
-        training_label(
-            play.get(
-                "use_for_training"
-            )
-        )
-    )
-    play["_queue_involved_roles"] = (
-        involved_roles_list(
-            play.get(
-                "involved_roles"
-            )
-        )
-    )
-    play["_queue_date"] = date_value(
-        play.get("match_date")
+    item["_queue_date"] = date_value(
+        item.get("match_date")
     )
 
 
-conferences = sorted(
-    {
-        clean_text(
-            play.get("conference")
-        )
-        for play in plays
-        if clean_text(
-            play.get("conference")
-        )
-    }
-)
+conferences = sorted({
+    clean_text(item.get("conference"))
+    for item in plays
+    if clean_text(item.get("conference"))
+})
 
-challenge_types = sorted(
-    {
-        clean_text(
-            play.get("challenge_type")
-        )
-        for play in plays
-        if (
-            play["_queue_play_type"]
-            == "Challenge"
-            and clean_text(
-                play.get("challenge_type")
-            )
-        )
-    }
-)
+challenge_types = sorted({
+    clean_text(item.get("challenge_type"))
+    for item in plays
+    if (
+        item["_queue_play_type"] == "Challenge"
+        and clean_text(item.get("challenge_type"))
+    )
+})
 
-crs_categories = sorted(
-    {
-        play["_queue_category"]
-        for play in plays
-        if (
-            play["_queue_play_type"]
-            == "Challenge"
-        )
-    }
-)
+crs_categories = sorted({
+    item["_queue_category"]
+    for item in plays
+    if (
+        item["_queue_play_type"] == "Challenge"
+        and item["_queue_category"]
+    )
+})
 
-outcomes = sorted(
-    {
-        play["_queue_outcome"]
-        for play in plays
-        if (
-            play["_queue_play_type"]
-            == "Challenge"
-        )
-    }
-)
+outcomes = sorted({
+    item["_queue_outcome"]
+    for item in plays
+    if (
+        item["_queue_play_type"] == "Challenge"
+        and item["_queue_outcome"]
+    )
+})
 
-challenging_teams = sorted(
-    {
-        clean_text(
-            play.get("challenging_team")
-        )
-        for play in plays
-        if (
-            play["_queue_play_type"]
-            == "Challenge"
-            and clean_text(
-                play.get("challenging_team")
-            )
-        )
-    }
-)
+challenging_teams = sorted({
+    clean_text(item.get("challenging_team"))
+    for item in plays
+    if (
+        item["_queue_play_type"] == "Challenge"
+        and clean_text(item.get("challenging_team"))
+    )
+})
 
-INVOLVED_ROLE_OPTIONS = ['R1', 'R2', 'Line Judge', 'Coach', 'Player', 'Scorer / Table', 'Review Official / Technician', 'Other']
-
-valid_dates = [
-    play["_queue_date"]
-    for play in plays
-    if play["_queue_date"]
-    is not None
+INVOLVED_ROLE_OPTIONS = [
+    "R1",
+    "R2",
+    "Line Judge",
+    "Coach",
+    "Player",
+    "Scorer / Table",
+    "Review Official / Technician",
+    "Other",
 ]
 
-min_data_date = (
-    min(valid_dates)
-    if valid_dates
-    else date.today()
-)
+valid_dates = [
+    item["_queue_date"]
+    for item in plays
+    if item["_queue_date"] is not None
+]
 
-max_data_date = (
-    max(valid_dates)
-    if valid_dates
-    else date.today()
-)
+min_data_date = min(valid_dates) if valid_dates else date.today()
+max_data_date = max(valid_dates) if valid_dates else date.today()
 
 
-focus_play_id = current_focus_play_id()
-focus_mode = focus_play_id is not None
-
+# The normal page is intentionally simple. All detailed filters live here.
 with st.expander(
-    "Filters",
-    expanded=(not focus_mode),
+    "Advanced Filters",
+    expanded=False,
 ):
-    # ----------------------------
-    # FILTER ROW 1
-    # ----------------------------
-
-    f1, f2, f3, f4 = st.columns(
-        [
-            1.0,
-            1.0,
-            1.1,
-            1.15,
-        ]
-    )
+    f1, f2, f3, f4 = st.columns(4)
 
     with f1:
         play_type_filter = st.selectbox(
             "Play Type",
-            [
-                "All",
-                "Challenge",
-                "POI",
-            ],
-            index=0,
+            ["All", "Challenge", "POI"],
+            index=["All", "Challenge", "POI"].index("All"),
             key="viewer_filter_play_type",
         )
 
@@ -781,6 +642,19 @@ with st.expander(
         )
 
     with f4:
+        record_use_filter = st.selectbox(
+            "Record Use",
+            [
+                "Usable Only",
+                "All Records",
+                "Unusable Only",
+            ],
+            key="viewer_filter_record_use",
+        )
+
+    d1, d2, d3 = st.columns([1.0, 1.0, 2.0])
+
+    with d1:
         date_filter = st.selectbox(
             "Date Range",
             [
@@ -791,170 +665,113 @@ with st.expander(
             key="viewer_filter_date_mode",
         )
 
-
-    record_use_filter = st.selectbox(
-        "Record Use",
-        [
-            "Usable Only",
-            "All Records",
-            "Unusable Only",
-        ],
-        index=0,
-        key="viewer_filter_record_use",
-        help=(
-            "Unusable records stay available here, but are excluded "
-            "from dashboards and coordinator reports."
-        ),
-    )
-
-
-    # ----------------------------
-    # DATE RANGE
-    # ----------------------------
-
     filter_start_date = None
     filter_end_date = None
 
     if date_filter == "Last 7 Days":
         filter_end_date = date.today()
-        filter_start_date = (
-            filter_end_date
-            - timedelta(days=7)
-        )
+        filter_start_date = filter_end_date - timedelta(days=7)
 
     elif date_filter == "Custom":
-        d1, d2 = st.columns(2)
-
-        with d1:
+        with d2:
             filter_start_date = st.date_input(
                 "Start Date",
                 value=min_data_date,
                 key="viewer_filter_start_date",
             )
 
-        with d2:
+        with d3:
             filter_end_date = st.date_input(
                 "End Date",
                 value=max_data_date,
                 key="viewer_filter_end_date",
             )
 
-        if (
-            filter_start_date
-            > filter_end_date
-        ):
-            st.error(
-                "Start Date cannot be after End Date."
-            )
+        if filter_start_date > filter_end_date:
+            st.error("Start Date cannot be after End Date.")
             st.stop()
 
+    c1, c2, c3, c4 = st.columns(4)
 
-    # ----------------------------
-    # CHALLENGE-SPECIFIC FILTERS
-    # ----------------------------
+    with c1:
+        challenge_type_filter = st.selectbox(
+            "DV Sport Challenge Type",
+            ["All"] + challenge_types,
+            key="viewer_filter_challenge_type",
+        )
 
-    challenge_filters_active = (
-        play_type_filter
-        in {
-            "Challenge",
-            "All",
-        }
+    with c2:
+        crs_category_filter = st.selectbox(
+            "CRS Category",
+            ["All"] + crs_categories,
+            key="viewer_filter_crs_category",
+        )
+
+    with c3:
+        outcome_filter = st.selectbox(
+            "Challenge Outcome",
+            ["All"] + outcomes,
+            key="viewer_filter_outcome",
+        )
+
+    with c4:
+        challenging_team_filter = st.selectbox(
+            "Challenging Team",
+            ["All"] + challenging_teams,
+            key="viewer_filter_challenging_team",
+        )
+
+    t1, t2, t3 = st.columns(3)
+
+    with t1:
+        accuracy_filter = st.selectbox(
+            "Review Decision",
+            [
+                "All",
+                "Correct",
+                "Incorrect",
+                "Not Tagged",
+            ],
+            key="viewer_filter_accuracy",
+        )
+
+    with t2:
+        training_filter = st.selectbox(
+            "Training Use",
+            [
+                "All",
+                "Marked for Training",
+                "Not Marked",
+            ],
+            key="viewer_filter_training",
+        )
+
+    with t3:
+        involved_filter = st.selectbox(
+            "Who Was Involved",
+            ["All"] + INVOLVED_ROLE_OPTIONS,
+            key="viewer_filter_involved",
+        )
+
+    search_filter = st.text_input(
+        "Search Match / Team / Score / Notes",
+        placeholder=(
+            "Type part of a match, team, score, category, or note..."
+        ),
+        key="viewer_filter_search",
     )
 
-    if challenge_filters_active:
-        c1, c2, c3 = st.columns(3)
+    if st.button(
+        "Reset Filters",
+        key="viewer_reset_filters",
+    ):
+        for state_key in list(st.session_state.keys()):
+            if state_key.startswith("viewer_filter_"):
+                st.session_state.pop(state_key, None)
 
-        with c1:
-            challenge_type_filter = st.selectbox(
-                "DV Sport Challenge Type",
-                ["All"] + challenge_types,
-                key="viewer_filter_challenge_type",
-            )
-
-        with c2:
-            crs_category_filter = st.selectbox(
-                "CRS Category",
-                ["All"] + crs_categories,
-                key="viewer_filter_crs_category",
-            )
-
-        with c3:
-            outcome_filter = st.selectbox(
-                "Challenge Outcome",
-                ["All"] + outcomes,
-                key="viewer_filter_outcome",
-            )
-
-        c4, c5 = st.columns(
-            [
-                1.0,
-                2.0,
-            ]
-        )
-
-        with c4:
-            challenging_team_filter = st.selectbox(
-                "Challenging Team",
-                ["All"] + challenging_teams,
-                key="viewer_filter_challenging_team",
-            )
-
-        with c5:
-            search_filter = st.text_input(
-                "Search Match / Team / Score",
-                placeholder=(
-                    "Example: Wisconsin, Penn State, 23-22..."
-                ),
-                key="viewer_filter_search",
-            )
-
-        tag1, tag2, tag3 = st.columns(3)
-
-        with tag1:
-            accuracy_filter = st.selectbox(
-                "Review Decision",
-                [
-                    "All",
-                    "Correct",
-                    "Incorrect",
-                    "Not Tagged",
-                ],
-                key="viewer_filter_accuracy",
-            )
-
-        with tag2:
-            training_filter = st.selectbox(
-                "Training Use",
-                [
-                    "All",
-                    "Marked for Training",
-                    "Not Marked",
-                ],
-                key="viewer_filter_training",
-            )
-
-        with tag3:
-            involved_filter = st.selectbox(
-                "Who Was Involved",
-                ["All"] + INVOLVED_ROLE_OPTIONS,
-                key="viewer_filter_involved",
-            )
-
-    else:
-        challenge_type_filter = "All"
-        crs_category_filter = "All"
-        outcome_filter = "All"
-        challenging_team_filter = "All"
-        accuracy_filter = "All"
-        training_filter = "All"
-        involved_filter = "All"
-
-        search_filter = st.text_input(
-            "Search Match / Team / Score",
-            placeholder="Search the POI library...",
-            key="viewer_filter_search_poi",
-        )
-
+        st.session_state.pop("viewer_match_picker", None)
+        st.session_state.pop("viewer_play_picker", None)
+        st.rerun()
 
 
 # ============================================================
@@ -962,587 +779,379 @@ with st.expander(
 # ============================================================
 
 filtered_plays = []
+search_term = clean_text(search_filter).lower()
 
-for play in plays:
+for item in plays:
     if (
         record_use_filter == "Usable Only"
-        and play["_queue_unusable"]
+        and item["_queue_unusable"]
     ):
         continue
 
     if (
         record_use_filter == "Unusable Only"
-        and not play["_queue_unusable"]
+        and not item["_queue_unusable"]
     ):
         continue
 
     if (
         play_type_filter != "All"
-        and play["_queue_play_type"]
-        != play_type_filter
+        and item["_queue_play_type"] != play_type_filter
     ):
         continue
 
     if (
         conference_filter != "All"
-        and clean_text(
-            play.get("conference")
-        )
-        != conference_filter
+        and clean_text(item.get("conference")) != conference_filter
     ):
         continue
 
     if (
         status_filter != "All"
-        and play["_queue_status"]
-        != status_filter
+        and item["_queue_status"] != status_filter
     ):
         continue
 
+    item_date = item["_queue_date"]
+
     if (
-        filter_start_date
-        is not None
+        filter_start_date is not None
         and (
-            play["_queue_date"]
-            is None
-            or play["_queue_date"]
-            < filter_start_date
+            item_date is None
+            or item_date < filter_start_date
         )
     ):
         continue
 
     if (
-        filter_end_date
-        is not None
+        filter_end_date is not None
         and (
-            play["_queue_date"]
-            is None
-            or play["_queue_date"]
-            > filter_end_date
+            item_date is None
+            or item_date > filter_end_date
         )
     ):
         continue
 
-    if (
-        play["_queue_play_type"]
-        == "Challenge"
-    ):
+    if item["_queue_play_type"] == "Challenge":
         if (
-            challenge_type_filter
-            != "All"
-            and clean_text(
-                play.get("challenge_type")
-            )
-            != challenge_type_filter
+            challenge_type_filter != "All"
+            and clean_text(item.get("challenge_type")) != challenge_type_filter
         ):
             continue
 
         if (
-            crs_category_filter
-            != "All"
-            and play["_queue_category"]
-            != crs_category_filter
+            crs_category_filter != "All"
+            and item["_queue_category"] != crs_category_filter
         ):
             continue
 
         if (
-            outcome_filter
-            != "All"
-            and play["_queue_outcome"]
-            != outcome_filter
+            outcome_filter != "All"
+            and item["_queue_outcome"] != outcome_filter
         ):
             continue
 
         if (
-            challenging_team_filter
-            != "All"
-            and clean_text(
-                play.get("challenging_team")
-            )
-            != challenging_team_filter
+            challenging_team_filter != "All"
+            and clean_text(item.get("challenging_team")) != challenging_team_filter
         ):
             continue
 
         if (
             accuracy_filter != "All"
-            and play["_queue_accuracy"]
-            != accuracy_filter
+            and item["_queue_accuracy"] != accuracy_filter
         ):
             continue
 
         if (
             training_filter == "Marked for Training"
-            and play["_queue_training"] != "Yes"
+            and item["_queue_training"] != "Yes"
         ):
             continue
 
         if (
             training_filter == "Not Marked"
-            and play["_queue_training"] != "No"
+            and item["_queue_training"] != "No"
         ):
             continue
 
         if (
             involved_filter != "All"
-            and involved_filter
-            not in play[
-                "_queue_involved_roles"
-            ]
+            and involved_filter not in item["_queue_involved_roles"]
         ):
             continue
 
-    needle = clean_text(
-        search_filter
-    ).lower()
-
-    if needle:
-        haystack = " | ".join(
+    if search_term:
+        haystack = " ".join(
             [
-                clean_text(
-                    play.get("match_name")
-                ),
-                clean_text(
-                    play.get("challenging_team")
-                ),
-                clean_text(
-                    play.get("score")
-                ),
-                clean_text(
-                    play.get("challenge_type")
-                ),
-                clean_text(
-                    play.get("crs_category")
-                ),
-                decision_accuracy_label(
-                    play.get(
-                        "review_decision_correct"
-                    )
-                ),
-                involved_roles_label(
-                    play.get(
-                        "involved_roles"
-                    )
-                ),
-                clean_text(
-                    play.get(
-                        "involved_people"
-                    )
-                ),
-                clean_text(
-                    play.get(
-                        "unusable_reason"
-                    )
-                ),
-                clean_text(
-                    play.get(
-                        "unusable_notes"
-                    )
-                ),
-                clean_text(
-                    play.get("reviewer_notes")
-                ),
-                clean_text(
-                    play.get("weekly_summary_note")
-                ),
+                clean_text(item.get("match_name")),
+                clean_text(item.get("conference")),
+                clean_text(item.get("score")),
+                clean_text(item.get("challenging_team")),
+                clean_text(item.get("challenge_type")),
+                clean_text(item.get("crs_category")),
+                clean_text(item.get("crs_outcome")),
+                clean_text(item.get("reviewer_notes")),
+                clean_text(item.get("weekly_summary_note")),
+                clean_text(item.get("involved_people")),
+                clean_text(item.get("unusable_reason")),
+                clean_text(item.get("unusable_notes")),
             ]
         ).lower()
 
-        if needle not in haystack:
+        if search_term not in haystack:
             continue
 
-    filtered_plays.append(play)
-
-
-# Viewer defaults to newest first.
-filtered_plays.sort(
-    key=lambda play: (
-        play["_queue_date"]
-        or date.min,
-        clean_text(
-            play.get("conference")
-        ),
-        clean_text(
-            play.get("match_name")
-        ),
-        int(
-            play.get("set_number")
-            or 0
-        ),
-        clean_text(
-            play.get("score")
-        ),
-        int(
-            play.get("id")
-            or 0
-        ),
-    ),
-    reverse=True,
-)
+    filtered_plays.append(item)
 
 
 if not filtered_plays:
     render_empty(
-        "No plays match those filters."
+        "No plays match the current filters. Open Advanced Filters to change them."
     )
     st.stop()
 
 
 # ============================================================
-# CLICKABLE TABLE
+# TWO-STEP BROWSER: MATCH -> PLAY
 # ============================================================
 
-with st.expander(
-    "Review Queue",
-    expanded=(not focus_mode),
-):
-    st.caption(
-        (
-            f"{len(filtered_plays):,} play(s) match the current filters. "
-            "Click any row to review that exact play."
-        )
+def browser_match_key(item):
+    return (
+        clean_text(item.get("match_date")),
+        clean_text(item.get("conference")),
+        clean_text(item.get("match_name")),
     )
 
-    queue_df = pd.DataFrame(
-        [
-            queue_row(
-                play,
-                index + 1,
-            )
-            for index, play
-            in enumerate(filtered_plays)
-        ]
+
+def browser_match_label(key, count):
+    match_date_text, conference_text, match_text = key
+    return (
+        f"{match_date_text or 'No Date'}  •  "
+        f"{conference_text or 'No Conference'}  •  "
+        f"{match_text or 'Unnamed Match'}  "
+        f"({count} play{'' if count == 1 else 's'})"
     )
 
-    initialize(
-        "viewer_queue_reset",
-        0,
-    )
 
-    queue_event = st.dataframe(
-        queue_df,
-        use_container_width=True,
-        hide_index=True,
-        height=min(
-            460,
-            42 + 35 * len(queue_df),
-        ),
-        on_select="rerun",
-        selection_mode="single-row",
-        key=(
-            "viewer_review_queue_"
-            f"{st.session_state['viewer_queue_reset']}"
-        ),
-        column_config={
-            "Review": st.column_config.TextColumn(
-                "Review",
-                width="small",
-            ),
-            "#": st.column_config.NumberColumn(
-                "#",
-                width="small",
-            ),
-            "Status": st.column_config.TextColumn(
-                "Status",
-                width="medium",
-            ),
-            "Use": st.column_config.TextColumn(
-                "Use",
-                width="small",
-            ),
-            "Date": st.column_config.TextColumn(
-                "Date",
-                width="small",
-            ),
-            "Conference": st.column_config.TextColumn(
-                "Conference",
-                width="small",
-            ),
-            "Match": st.column_config.TextColumn(
-                "Match",
-                width="large",
-            ),
-            "Type": st.column_config.TextColumn(
-                "Type",
-                width="small",
-            ),
-            "Set": st.column_config.TextColumn(
-                "Set",
-                width="small",
-            ),
-            "Score": st.column_config.TextColumn(
-                "Score",
-                width="small",
-            ),
-            "Challenging Team": st.column_config.TextColumn(
-                "Challenging Team",
-                width="medium",
-            ),
-            "Challenge Type": st.column_config.TextColumn(
-                "Challenge Type",
-                width="medium",
-            ),
-            "CRS Category": st.column_config.TextColumn(
-                "CRS Category",
-                width="medium",
-            ),
-            "Outcome": st.column_config.TextColumn(
-                "Outcome",
-                width="medium",
-            ),
-            "Decision Correct?": st.column_config.TextColumn(
-                "Decision Correct?",
-                width="medium",
-            ),
-            "Training": st.column_config.TextColumn(
-                "Training",
-                width="small",
-            ),
-            "Involved": st.column_config.TextColumn(
-                "Involved",
-                width="large",
-            ),
-        },
-    )
+def browser_play_label(item, position, total):
+    play_type = item["_queue_play_type"]
+    set_text = clean_text(item.get("set_number"))
+    score_text = clean_text(item.get("score"))
+    team_text = clean_text(item.get("challenging_team"))
+    type_text = clean_text(item.get("challenge_type"))
+    category_text = clean_text(item.get("crs_category"))
+    status_text = item["_queue_status"]
 
-    selected_rows = []
+    details = [
+        f"{play_type.upper()} {position}/{total}",
+    ]
 
-    try:
-        selected_rows = (
-            queue_event.selection.rows
-        )
-    except Exception:
-        selected_rows = []
+    if set_text:
+        details.append(f"Set {set_text}")
+    if score_text:
+        details.append(score_text)
+    if team_text:
+        details.append(team_text)
+    if type_text:
+        details.append(type_text)
+    elif category_text:
+        details.append(category_text)
 
-    if selected_rows:
-        clicked_index = selected_rows[0]
+    details.append(status_text)
 
-        if (
-            0 <= clicked_index
-            < len(filtered_plays)
-        ):
-            clicked_id = filtered_plays[
-                clicked_index
-            ]["id"]
+    if item["_queue_unusable"]:
+        details.append("UNUSABLE")
 
-            selected_changed = (
-                st.session_state.get(
-                    "viewer_selected_play_id"
-                )
-                != clicked_id
-            )
-
-            focus_changed = (
-                st.session_state.get(
-                    "viewer_focus_play_id"
-                )
-                != clicked_id
-            )
-
-            st.session_state[
-                "viewer_selected_play_id"
-            ] = clicked_id
-
-            st.session_state[
-                "viewer_focus_play_id"
-            ] = clicked_id
-
-            if (
-                selected_changed
-                or focus_changed
-            ):
-                st.rerun()
+    return "  •  ".join(details)
 
 
-# Focused review opens the exact play selected in the queue.
-focus_play = None
+match_to_plays = {}
+match_keys = []
 
-if focus_play_id is not None:
-    for candidate in plays:
-        try:
-            candidate_id = int(
-                candidate.get("id")
-            )
-        except (
-            TypeError,
-            ValueError,
-        ):
-            continue
+for item in filtered_plays:
+    key = browser_match_key(item)
 
-        if candidate_id == focus_play_id:
-            focus_play = candidate
+    if key not in match_to_plays:
+        match_to_plays[key] = []
+        match_keys.append(key)
+
+    match_to_plays[key].append(item)
+
+
+match_picker_key = "viewer_match_picker"
+play_picker_key = "viewer_play_picker"
+
+if st.session_state.get(match_picker_key) not in match_keys:
+    current_id = st.session_state.get("viewer_selected_play_id")
+    current_match = None
+
+    for item in filtered_plays:
+        if item.get("id") == current_id:
+            current_match = browser_match_key(item)
             break
 
-
-if focus_play is not None:
-    # Focus mode bypasses the filtered queue for the selected record.
-    # The filtered queue still exists in the collapsed expander, but
-    # it cannot override the hyperlink target.
-    play = focus_play
-    selected_play_id = focus_play_id
-
-    st.session_state[
-        "viewer_selected_play_id"
-    ] = selected_play_id
-
-    queue_ids = [
-        item["id"]
-        for item in filtered_plays
-    ]
-
-    if selected_play_id in queue_ids:
-        selected_index = queue_ids.index(
-            selected_play_id
-        )
-    else:
-        # The focused challenge may fall outside the active filters.
-        # Treat it as a one-item focused queue for navigation purposes.
-        queue_ids = [
-            selected_play_id
-        ]
-        selected_index = 0
-
-else:
-    queue_ids = [
-        item["id"]
-        for item in filtered_plays
-    ]
-
-    selected_play_id = st.session_state.get(
-        "viewer_selected_play_id"
+    st.session_state[match_picker_key] = (
+        current_match
+        if current_match in match_keys
+        else match_keys[0]
     )
 
-    if selected_play_id not in queue_ids:
-        selected_play_id = queue_ids[0]
 
-        st.session_state[
-            "viewer_selected_play_id"
-        ] = selected_play_id
+browse1, browse2 = st.columns([1.1, 1.4])
 
-    selected_index = queue_ids.index(
-        selected_play_id
+with browse1:
+    selected_match_key = st.selectbox(
+        "Match",
+        options=match_keys,
+        key=match_picker_key,
+        format_func=lambda key: browser_match_label(
+            key,
+            len(match_to_plays[key]),
+        ),
     )
 
-    play = filtered_plays[
-        selected_index
-    ]
+current_match_plays = match_to_plays[selected_match_key]
+current_match_ids = [item["id"] for item in current_match_plays]
+
+if st.session_state.get(play_picker_key) not in current_match_ids:
+    st.session_state[play_picker_key] = current_match_ids[0]
+
+play_by_id = {item["id"]: item for item in current_match_plays}
+play_position = {
+    item["id"]: index + 1
+    for index, item in enumerate(current_match_plays)
+}
+
+with browse2:
+    selected_play_id = st.selectbox(
+        "Challenge / Play",
+        options=current_match_ids,
+        key=play_picker_key,
+        format_func=lambda play_id: browser_play_label(
+            play_by_id[play_id],
+            play_position[play_id],
+            len(current_match_ids),
+        ),
+    )
+
+st.session_state["viewer_selected_play_id"] = selected_play_id
+play = play_by_id[selected_play_id]
+play_id = play["id"]
+is_challenge = play["_queue_play_type"] == "Challenge"
+
+queue_ids = current_match_ids
+selected_index = queue_ids.index(selected_play_id)
 
 previous_play_id = (
-    queue_ids[
-        selected_index - 1
-    ]
+    queue_ids[selected_index - 1]
     if selected_index > 0
     else None
 )
 
 next_play_id = (
-    queue_ids[
-        selected_index + 1
-    ]
-    if selected_index
-    < len(queue_ids) - 1
+    queue_ids[selected_index + 1]
+    if selected_index < len(queue_ids) - 1
     else None
 )
 
 
-def move_to_play(target_play_id):
-    if target_play_id is None:
-        return
+# ============================================================
+# CURRENTLY VIEWING — MAKE THE ACTIVE CHALLENGE OBVIOUS
+# ============================================================
 
-    st.session_state[
-        "viewer_selected_play_id"
-    ] = target_play_id
+with st.container(border=True):
+    top_left, top_right = st.columns([4.8, 1.2])
 
-    st.session_state[
-        "viewer_queue_reset"
-    ] += 1
+    with top_left:
+        st.caption("CURRENTLY VIEWING")
+        st.markdown(
+            f"## {clean_value(play.get('match_name'), 'Play')}"
+        )
+
+        identity_parts = [
+            play["_queue_play_type"],
+            f"{selected_index + 1} of {len(queue_ids)} in this match",
+        ]
+
+        if clean_text(play.get("set_number")):
+            identity_parts.append(
+                f"Set {clean_text(play.get('set_number'))}"
+            )
+
+        if clean_text(play.get("score")):
+            identity_parts.append(
+                f"Score {clean_text(play.get('score'))}"
+            )
+
+        if clean_text(play.get("challenging_team")):
+            identity_parts.append(
+                f"Challenge by {clean_text(play.get('challenging_team'))}"
+            )
+
+        st.markdown(
+            "**" + "  •  ".join(identity_parts) + "**"
+        )
+
+        detail_parts = [
+            clean_text(play.get("challenge_type")),
+            clean_text(play.get("crs_category")),
+            clean_text(play.get("crs_outcome")),
+        ]
+        detail_parts = [part for part in detail_parts if part]
+
+        if detail_parts:
+            st.caption("  •  ".join(detail_parts))
+
+    with top_right:
+        render_status_pill(
+            play.get("review_status")
+            or "Not Viewed"
+        )
 
 
-nav_left, queue_position, nav_right = st.columns(
-    [
-        1.0,
-        2.5,
-        1.0,
-    ]
+st.caption(
+    f"{len(filtered_plays):,} play{'' if len(filtered_plays) == 1 else 's'} "
+    f"across {len(match_keys):,} match{'' if len(match_keys) == 1 else 'es'} match the current filters."
 )
 
+
+# ============================================================
+# SIMPLE MATCH NAVIGATION
+# ============================================================
+
+nav_left, nav_center, nav_right = st.columns([1.0, 2.2, 1.0])
+
 with nav_left:
-    previous_clicked = st.button(
+    if st.button(
         "← Previous",
         use_container_width=True,
-        disabled=(
-            previous_play_id is None
-        ),
-        key="viewer_previous",
-    )
+        disabled=(previous_play_id is None),
+        key="viewer_previous_simple",
+    ):
+        st.session_state["viewer_play_picker"] = previous_play_id
+        st.session_state["viewer_selected_play_id"] = previous_play_id
+        st.rerun()
 
-with queue_position:
+with nav_center:
     st.markdown(
-        (
-            f"<div style='text-align:center; padding-top:0.55rem;'>"
-            f"Viewing <strong>{selected_index + 1:,}</strong> "
-            f"of <strong>{len(queue_ids):,}</strong> "
-            f"in the filtered set"
-            f"</div>"
-        ),
+        f"<div style='text-align:center; padding-top:0.55rem;'>"
+        f"Play <strong>{selected_index + 1}</strong> of "
+        f"<strong>{len(queue_ids)}</strong> in this match"
+        f"</div>",
         unsafe_allow_html=True,
     )
 
 with nav_right:
-    next_clicked = st.button(
+    if st.button(
         "Next →",
         use_container_width=True,
-        disabled=(
-            next_play_id is None
-        ),
-        key="viewer_next",
-    )
-
-
-if previous_clicked:
-    move_to_play(
-        previous_play_id
-    )
-    st.rerun()
-
-
-if next_clicked:
-    move_to_play(
-        next_play_id
-    )
-    st.rerun()
-
-
-# ============================================================
-# FOCUSED REVIEW MODE
-# ============================================================
-
-if focus_mode:
-    focus_left, focus_right = st.columns(
-        [
-            1.15,
-            3.85,
-        ]
-    )
-
-    with focus_left:
-        if st.button(
-            "← Back to Queue",
-            use_container_width=True,
-            key="viewer_back_to_queue",
-        ):
-            clear_focus_mode()
-            st.session_state[
-                "viewer_queue_reset"
-            ] += 1
-            st.rerun()
-
-    with focus_right:
-        st.info(
-            (
-                "Focused review mode — Filters and Review Queue "
-                "are collapsed so you can concentrate on this play."
-            )
-        )
+        disabled=(next_play_id is None),
+        key="viewer_next_simple",
+    ):
+        st.session_state["viewer_play_picker"] = next_play_id
+        st.session_state["viewer_selected_play_id"] = next_play_id
+        st.rerun()
 
 
 # ============================================================
@@ -1751,7 +1360,7 @@ angles.sort(
 
 if not angles:
     render_empty(
-        "DV Sport does not have usable video attached to this play."
+        "DV Sport does not have a video URL attached to this play."
     )
 
 else:
