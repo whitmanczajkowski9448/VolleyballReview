@@ -324,6 +324,87 @@ def queue_row(play, number):
     }
 
 
+
+def parse_time_to_seconds(value):
+    text = clean_text(value)
+
+    if not text:
+        return None
+
+    if text.isdigit():
+        return int(text)
+
+    parts = text.split(":")
+
+    try:
+        parts = [
+            int(part)
+            for part in parts
+        ]
+    except ValueError:
+        return None
+
+    if len(parts) == 2:
+        minutes, seconds = parts
+
+        return (
+            minutes * 60
+            + seconds
+        )
+
+    if len(parts) == 3:
+        hours, minutes, seconds = parts
+
+        return (
+            hours * 3600
+            + minutes * 60
+            + seconds
+        )
+
+    return None
+
+
+def seconds_to_time(value):
+    if value in (
+        None,
+        "",
+    ):
+        return ""
+
+    try:
+        total_seconds = int(value)
+    except (
+        ValueError,
+        TypeError,
+    ):
+        return ""
+
+    minutes = total_seconds // 60
+    seconds = total_seconds % 60
+
+    return (
+        f"{minutes}:"
+        f"{seconds:02d}"
+    )
+
+
+def initialize(
+    key,
+    value,
+):
+    """
+    Initialize a widget/session-state value once for the selected play.
+
+    Each review field uses a play-specific key, so moving between plays
+    loads the stored database value without overwriting unsaved widget
+    state on normal Streamlit reruns.
+    """
+    if key not in st.session_state:
+        st.session_state[
+            key
+        ] = value
+
+
 def has_usable_video_url(value):
     """
     Deliberately permissive DV Sport media check.
