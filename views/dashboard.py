@@ -25,7 +25,7 @@ render_page_header(
     "Review Intelligence",
     (
         "Live post-match review metrics, workflow progress, "
-        "challenge trends, and plays of interest across your "
+        "challenge trends, faults, and plays of interest across your "
         "active conferences."
     ),
     eyebrow="NCAA WVB • 2026 REVIEW CENTER",
@@ -77,6 +77,12 @@ def normalized_play_type(value):
         "PLAYS OF INTEREST",
     }:
         return "POI"
+
+    if text in {
+        "FAULT",
+        "FAULTS",
+    }:
+        return "Fault"
 
     return clean_text(value) or "Unknown"
 
@@ -226,6 +232,10 @@ expected_columns = [
     "play_type",
     "review_status",
     "crs_category",
+    "ncaa_challenge_category",
+    "play_category",
+    "dvsport_play_category",
+    "is_starred",
     "crs_outcome",
     "challenge_result",
     "match_date",
@@ -302,6 +312,7 @@ with filter2:
             "All Plays",
             "Challenges",
             "POIs",
+            "FAULTS",
         ],
     )
 
@@ -347,6 +358,14 @@ elif play_type_filter == "POIs":
         == "POI"
     ]
 
+elif play_type_filter == "FAULTS":
+    filtered = filtered[
+        filtered[
+            "dashboard_play_type"
+        ]
+        == "Fault"
+    ]
+
 if status_filter != "All":
     filtered = filtered[
         filtered[
@@ -370,6 +389,13 @@ poi_df = filtered[
     == "POI"
 ].copy()
 
+fault_df = filtered[
+    filtered[
+        "dashboard_play_type"
+    ]
+    == "Fault"
+].copy()
+
 
 # ============================================================
 # KPI CALCULATIONS
@@ -378,6 +404,7 @@ poi_df = filtered[
 total_plays = len(filtered)
 total_challenges = len(challenge_df)
 total_pois = len(poi_df)
+total_faults = len(fault_df)
 
 complete = int(
     (
@@ -460,8 +487,8 @@ render_section_label(
     "Review Inventory"
 )
 
-k1, k2, k3, k4, k5, k6 = st.columns(
-    6
+k1, k2, k3, k4, k5, k6, k7 = st.columns(
+    7
 )
 
 with k1:
@@ -490,13 +517,21 @@ with k3:
 
 with k4:
     render_kpi(
+        "FAULTS",
+        f"{total_faults:,}",
+        "Imported fault clips",
+        "green",
+    )
+
+with k5:
+    render_kpi(
         "Complete",
         f"{complete:,}",
         f"{completion_rate:.1f}% of visible plays",
         "green",
     )
 
-with k5:
+with k6:
     render_kpi(
         "Needs Review",
         f"{needs_review:,}",
@@ -504,7 +539,7 @@ with k5:
         "purple",
     )
 
-with k6:
+with k7:
     render_kpi(
         "Not Viewed",
         f"{not_viewed:,}",
@@ -631,6 +666,7 @@ with chart_left:
         type_order = [
             "Challenge",
             "POI",
+            "Fault",
         ]
 
         type_colors = alt.Scale(
@@ -638,6 +674,7 @@ with chart_left:
             range=[
                 SKY,
                 LAVENDER,
+                MINT,
             ],
         )
 
@@ -944,8 +981,16 @@ with challenge_left:
 
     category_data = (
         challenge_df[
-            "crs_category"
+            "ncaa_challenge_category"
         ]
+        .where(
+            challenge_df[
+                "ncaa_challenge_category"
+            ].apply(clean_text) != "",
+            challenge_df[
+                "crs_category"
+            ],
+        )
         .apply(clean_text)
         .replace(
             "",
@@ -1116,4 +1161,221 @@ with challenge_right:
     else:
         st.caption(
             "No challenge outcome data available."
+        )
+
+
+# ============================================================
+# PLAY / FAULT CLASSIFICATION ANALYTICS
+# ============================================================
+
+st.write("")
+
+render_section_label(
+    "Play Classification Analytics"
+)
+
+classification_left, classification_right = st.columns(
+    2
+)
+
+with classification_left:
+    st.subheader(
+        "All Plays by Review Category"
+    )
+
+    classification_series = (
+        filtered[
+            "play_category"
+        ]
+        .apply(clean_text)
+        .replace(
+            "",
+            "Not Tagged",
+        )
+    )
+
+    classification_data = (
+        classification_series
+        .value_counts()
+        .rename_axis(
+            "Play Category"
+        )
+        .reset_index(
+            name="Plays"
+        )
+    )
+
+    if not classification_data.empty:
+        classification_chart = (
+            alt.Chart(
+                classification_data
+            )
+            .mark_bar(
+                cornerRadiusTopRight=6,
+                cornerRadiusBottomRight=6,
+            )
+            .encode(
+                x=alt.X(
+                    "Plays:Q",
+                    title=None,
+                ),
+                y=alt.Y(
+                    "Play Category:N",
+                    sort="-x",
+                    title=None,
+                ),
+                color=alt.value(
+                    LAVENDER
+                ),
+                tooltip=[
+                    "Play Category:N",
+                    "Plays:Q",
+                ],
+            )
+            .properties(
+                height=max(
+                    280,
+                    32
+                    * len(
+                        classification_data
+                    ),
+                )
+            )
+        )
+
+        st.altair_chart(
+            classification_chart,
+            use_container_width=True,
+        )
+
+    else:
+        st.caption(
+            "No play-category data available."
+        )
+
+
+with classification_right:
+    st.subheader(
+        "FAULTS by Conference"
+    )
+
+    fault_conf_data = (
+        fault_df[
+            "dashboard_conference"
+        ]
+        .value_counts()
+        .rename_axis(
+            "Conference"
+        )
+        .reset_index(
+            name="FAULTS"
+        )
+    )
+
+    if not fault_conf_data.empty:
+        fault_conf_chart = (
+            alt.Chart(
+                fault_conf_data
+            )
+            .mark_bar(
+                cornerRadiusTopRight=6,
+                cornerRadiusBottomRight=6,
+            )
+            .encode(
+                x=alt.X(
+                    "FAULTS:Q",
+                    title=None,
+                ),
+                y=alt.Y(
+                    "Conference:N",
+                    sort="-x",
+                    title=None,
+                ),
+                color=alt.value(
+                    MINT
+                ),
+                tooltip=[
+                    "Conference:N",
+                    "FAULTS:Q",
+                ],
+            )
+            .properties(
+                height=max(
+                    280,
+                    42
+                    * len(
+                        fault_conf_data
+                    ),
+                )
+            )
+        )
+
+        st.altair_chart(
+            fault_conf_chart,
+            use_container_width=True,
+        )
+
+    else:
+        st.caption(
+            "No FAULT records match the current filters."
+        )
+
+
+# ============================================================
+# FAVORITES
+# ============================================================
+
+st.write("")
+
+render_section_label(
+    "Favorites"
+)
+
+starred_series = (
+    filtered[
+        "is_starred"
+    ]
+    .fillna(False)
+    .astype(bool)
+)
+
+starred_count = int(
+    starred_series.sum()
+)
+
+fav1, fav2, fav3, fav4 = st.columns(
+    4
+)
+
+with fav1:
+    render_kpi(
+        "Starred Plays",
+        f"{starred_count:,}",
+        "Favorites in current view",
+        "purple",
+    )
+
+for column, play_type, label, color in [
+    (fav2, "Challenge", "Starred Challenges", "blue"),
+    (fav3, "POI", "Starred POIs", "purple"),
+    (fav4, "Fault", "Starred FAULTS", "green"),
+]:
+    with column:
+        type_starred = int(
+            (
+                (
+                    filtered[
+                        "dashboard_play_type"
+                    ]
+                    == play_type
+                )
+                & starred_series
+            ).sum()
+        )
+
+        render_kpi(
+            label,
+            f"{type_starred:,}",
+            "Favorites",
+            color,
         )

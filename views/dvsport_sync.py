@@ -170,8 +170,8 @@ with st.container(
 
     st.caption(
         (
-            "The selected dates are inclusive and apply to both "
-            "Challenges and POIs. Existing database records outside "
+            "The selected dates are inclusive and apply to "
+            "Challenges, POIs, and FAULTS. Existing database records outside "
             "this range are not deleted or changed."
         )
     )
@@ -190,8 +190,9 @@ st.info(
         "Challenges are pulled from each conference's "
         "REVIEWS / REVIEWS BY GAME library. POIs are pulled "
         "from each conference's POI library. FAULTS are pulled "
-        "from each conference's FAULT or FAULTS library using the "
-        "same combined-playlist / individual-play fallback pattern. "
+        "from each conference's FAULTS library. Every .DVPLAYLIST beneath "
+        "the FAULTS folder is checked, with match/date recovered from "
+        "playlist metadata or media URLs when needed. "
         "Existing reviewer work, NCAA classifications, favorites, "
         "and notes are preserved."
     )
@@ -316,6 +317,11 @@ if run_sync:
                     f"POIs: {pois:,}"
                 )
 
+            if faults is not None:
+                parts.append(
+                    f"FAULTS: {faults:,}"
+                )
+
             if inserted is not None:
                 parts.append(
                     f"New: {inserted:,}"
@@ -352,7 +358,7 @@ if run_sync:
 
             sync_status.update(
                 label=(
-                    "DV Sport challenges + POIs sync complete"
+                    "DV Sport challenges + POIs + FAULTS sync complete"
                 ),
                 state="complete",
                 expanded=True,
@@ -400,8 +406,8 @@ if run_sync:
             )
         )
 
-        r1, r2, r3, r4 = st.columns(
-            4
+        r1, r2, r3, r4, r5 = st.columns(
+            5
         )
 
         with r1:
@@ -418,33 +424,45 @@ if run_sync:
 
         with r3:
             st.metric(
+                "FAULTS",
+                f"{result['faults_found']:,}",
+            )
+
+        with r4:
+            st.metric(
                 "New Plays",
                 f"{result['plays_inserted']:,}",
             )
 
-        with r4:
+        with r5:
             st.metric(
                 "Refreshed Plays",
                 f"{result['plays_updated']:,}",
             )
 
-        r5, r6, r7, r8 = st.columns(
-            4
+        r6, r7, r8, r9, r10 = st.columns(
+            5
         )
 
-        with r5:
+        with r6:
             st.metric(
                 "Challenge Playlists",
                 f"{result['challenge_playlists']:,}",
             )
 
-        with r6:
+        with r7:
             st.metric(
                 "POI Match Groups",
                 f"{result['poi_match_groups']:,}",
             )
 
-        with r7:
+        with r8:
+            st.metric(
+                "FAULT Match Groups",
+                f"{result['fault_match_groups']:,}",
+            )
+
+        with r9:
             st.metric(
                 "POI Combined",
                 f"{result['poi_combined_groups']:,}",
@@ -452,7 +470,7 @@ if run_sync:
                 delta_color="off",
             )
 
-        with r8:
+        with r10:
             st.metric(
                 "POI Fallback",
                 f"{result['poi_fallback_groups']:,}",

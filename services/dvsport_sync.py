@@ -1505,12 +1505,24 @@ def extract_pois_from_playlist(
 # ============================================================
 
 def parse_fault_playlist_title(title):
-    result = {
-        "date": parse_leading_date(title),
-        "match": clean_text(title),
-    }
+    """
+    Best-effort FAULT playlist title parsing.
+
+    FAULT discovery does not depend on a particular playlist title.
+    If the title contains the standard DV Sport leading date, use it.
+    Match/date can also be recovered from the media URLs after the
+    playlist is opened.
+    """
     text = clean_text(title)
-    match = re.match(
+
+    result = {
+        "date":
+            parse_leading_date(text),
+        "match":
+            text,
+    }
+
+    patterns = [
         (
             r"^\d{2}[.\-]\d{2}[.\-]\d{2}\s*-\s*"
             r"(?P<match>.+?)"
@@ -1518,158 +1530,721 @@ def parse_fault_playlist_title(title):
             r"(?:\s*-\s*PLAY\s+\d+)?"
             r"(?:\s*-\s*\d{2}-\d{2}-\d{2})?$"
         ),
-        text,
-        flags=re.IGNORECASE,
-    )
-    if match:
-        result["match"] = match.group("match").strip()
+        (
+            r"^(?P<match>.+?)"
+            r"\s*-\s*FAULTS?"
+            r"(?:\s*-\s*PLAY\s+\d+)?$"
+        ),
+    ]
+
+    for pattern in patterns:
+        match = re.match(
+            pattern,
+            text,
+            flags=re.IGNORECASE,
+        )
+
+        if not match:
+            continue
+
+        parsed_match = clean_text(
+            match.groupdict().get(
+                "match"
+            )
+        )
+
+        if parsed_match:
+            result[
+                "match"
+            ] = parsed_match
+
+        break
+
     return result
 
 
-def fault_match_key(item):
-    parsed = parse_fault_playlist_title(item.get("Title"))
-    match_date = parsed["date"]
-    return (
-        item.get("_Conference", ""),
-        match_date.isoformat() if match_date else "",
-        parsed["match"].upper(),
+def fault_match_info_from_media(
+    root_data,
+):
+    """
+    Recover match and date from the real media URLs.
+
+    Supplied DV Sport FAULT media paths follow a pattern such as:
+
+      .../INDIANA VS NOTRE DAME - 08.14.26 - 17-41-35//
+      PLAY 021 - PGM...
+
+    This is used as a fallback when the FAULTS playlist title itself
+    does not provide a usable date/match.
+    """
+    playlist = (
+        root_data.get(
+            "Playlist"
+        )
+        or root_data.get(
+            "playlist"
+        )
+        or {}
     )
 
+    maps = [
+        playlist.get(
+            "MediaMap"
+        ),
+        playlist.get(
+            "mediamap"
+        ),
+        root_data.get(
+            "SasMap"
+        ),
+        root_data.get(
+            "sasMap"
+        ),
+    ]
 
-def find_fault_playlist_groups(items, start_date, end_date):
-    groups = {}
-    for item in items:
-        item_id = clean_text(item.get("Id"))
-        url = clean_text(item.get("Url"))
-        title = clean_text(item.get("Title"))
-        conference = conference_from_id(item_id)
-        if conference is None:
-            continue
-        upper_id = item_id.upper()
-        expected1 = f"HOME/VIDEOS/{YEAR}/{conference}/FAULT/"
-        expected2 = f"HOME/VIDEOS/{YEAR}/{conference}/FAULTS/"
-        if not (
-            upper_id.startswith(expected1.upper())
-            or upper_id.startswith(expected2.upper())
+    urls = []
+
+    for mapping in maps:
+        if not isinstance(
+            mapping,
+            dict,
         ):
             continue
-        if item.get("Type") != 0 or not url.upper().endswith(".DVPLAYLIST"):
-            continue
-        if not in_date_range(title, start_date, end_date):
-            continue
-        upper_title = title.upper()
-        is_individual = bool(
-            re.search(r"\s-\sFAULT\s-\sPLAY\s+\d+", upper_title)
-        )
-        is_combined = bool(
-            re.search(r"\s-\sFAULTS(?:\s-|$)", upper_title)
-        )
-        # Some DV Sport installs use FAULT - PLAY and no combined playlist.
-        if not (is_individual or is_combined):
-            continue
-        copy = dict(item)
-        copy["_Conference"] = conference
-        copy["_SourceType"] = "Fault"
-        key = fault_match_key(copy)
-        groups.setdefault(key, {"combined": [], "individual": []})
-        groups[key]["combined" if is_combined else "individual"].append(copy)
 
-    for group in groups.values():
-        group["combined"].sort(
-            key=lambda item: (
-                to_int(item.get("NumberOfPlays")) or -1,
-                to_int(item.get("LastModifiedTicks")) or 0,
-            ),
-            reverse=True,
+        for value in mapping.values():
+            url = clean_text(
+                value
+            )
+
+            if url:
+                urls.append(
+                    url
+                )
+
+    pattern = re.compile(
+        (
+            r"/(?P<match>[^/]+?)"
+            r"\s*-\s*"
+            r"(?P<date>\d{2}[.\-]\d{2}[.\-]\d{2})"
+            r"\s*-\s*"
+            r"\d{2}-\d{2}-\d{2}"
+            r"//PLAY\s+\d+"
+        ),
+        flags=re.IGNORECASE,
+    )
+
+    for url in urls:
+        candidate = (
+            url
+            .replace(
+                "%20",
+                " ",
+            )
         )
-        group["individual"].sort(key=lambda item: clean_text(item.get("Title")))
+
+        match = pattern.search(
+            candidate
+        )
+
+        if not match:
+            continue
+
+        raw_date = (
+            match.group(
+                "date"
+            )
+            .replace(
+                "-",
+                ".",
+            )
+        )
+
+        try:
+            match_date = datetime.strptime(
+                raw_date,
+                "%m.%d.%y",
+            ).date()
+
+        except ValueError:
+            match_date = None
+
+        return {
+            "date":
+                match_date,
+            "match":
+                clean_text(
+                    match.group(
+                        "match"
+                    )
+                ),
+        }
+
+    return {
+        "date":
+            None,
+        "match":
+            "",
+    }
+
+
+def resolve_fault_match_info(
+    root_data,
+    library_item,
+):
+    title_info = parse_fault_playlist_title(
+        library_item.get(
+            "Title"
+        )
+    )
+
+    media_info = fault_match_info_from_media(
+        root_data
+    )
+
+    return {
+        "date":
+            (
+                title_info.get(
+                    "date"
+                )
+                or media_info.get(
+                    "date"
+                )
+            ),
+        "match":
+            (
+                media_info.get(
+                    "match"
+                )
+                or title_info.get(
+                    "match"
+                )
+                or clean_text(
+                    library_item.get(
+                        "Title"
+                    )
+                )
+                or "FAULTS"
+            ),
+    }
+
+
+def find_fault_playlist_groups(
+    items,
+    start_date,
+    end_date,
+):
+    """
+    Discover real FAULT playlists.
+
+    Actual DV Sport structure confirmed from supplied data:
+
+      HOME/VIDEOS/<YEAR>/<CONFERENCE>/FAULTS
+
+    FAULTS is a sibling of POI.
+
+    Unlike the earlier implementation, this does NOT require playlist
+    titles to contain 'FAULTS' or 'FAULT - PLAY'. Every Type=0
+    .DVPLAYLIST beneath the plural /FAULTS/ directory is accepted.
+
+    If the playlist title has a leading date, we can filter it before
+    opening the playlist. If the title has no date, keep it as a
+    candidate and validate its date after fetching the playlist by
+    looking at the media path.
+    """
+    groups = {}
+
+    for item in items:
+        item_id = clean_text(
+            item.get(
+                "Id"
+            )
+        )
+
+        url = clean_text(
+            item.get(
+                "Url"
+            )
+        )
+
+        title = clean_text(
+            item.get(
+                "Title"
+            )
+        )
+
+        conference = conference_from_id(
+            item_id
+        )
+
+        if conference is None:
+            continue
+
+        expected_prefix = (
+            f"HOME/VIDEOS/{YEAR}/"
+            f"{conference}/FAULTS/"
+        )
+
+        if not item_id.upper().startswith(
+            expected_prefix.upper()
+        ):
+            continue
+
+        if item.get(
+            "Type"
+        ) != 0:
+            continue
+
+        if not url.upper().endswith(
+            ".DVPLAYLIST"
+        ):
+            continue
+
+        title_date = parse_leading_date(
+            title
+        )
+
+        if (
+            title_date is not None
+            and not (
+                start_date
+                <= title_date
+                <= end_date
+            )
+        ):
+            continue
+
+        copy = dict(
+            item
+        )
+
+        copy[
+            "_Conference"
+        ] = conference
+
+        copy[
+            "_SourceType"
+        ] = "Fault"
+
+        # Treat each real playlist as its own discovery job.
+        # Stable DV Sport PlayId values prevent duplicates on import.
+        group_key = (
+            conference,
+            clean_text(
+                item.get(
+                    "Id"
+                )
+            ),
+            url,
+        )
+
+        groups[
+            group_key
+        ] = {
+            "combined": [
+                copy
+            ],
+            "individual": [],
+        }
+
     return groups
 
 
-def build_fault_dvsport_id(fields, play, library_item):
-    play_id = clean_text(play.get("PlayId"))
+def build_fault_dvsport_id(
+    fields,
+    play,
+    library_item,
+):
+    play_id = (
+        clean_text(
+            play.get(
+                "PlayId"
+            )
+        )
+        or clean_text(
+            play.get(
+                "playId"
+            )
+        )
+    )
+
     if play_id:
-        return f"fault:play:{play_id}"
-    internal_play_id = clean_text(play.get("InternalPlayId"))
+        return (
+            f"fault:play:"
+            f"{play_id}"
+        )
+
+    internal_play_id = (
+        clean_text(
+            play.get(
+                "InternalPlayId"
+            )
+        )
+        or clean_text(
+            play.get(
+                "internalPlayId"
+            )
+        )
+    )
+
     if internal_play_id:
-        return f"fault:internal:{internal_play_id}"
-    parsed = parse_fault_playlist_title(library_item.get("Title"))
-    raw = "|".join([
-        clean_text(library_item.get("_Conference")),
-        parsed["date"].isoformat() if parsed["date"] else "",
-        parsed["match"],
-        clean_text(fields.get("PLAY_#")) or clean_text(play.get("PlayNumber")),
-        clean_text(fields.get("SET")),
-        clean_text(fields.get("Home")),
-        clean_text(fields.get("Away")),
-    ])
-    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
-    return f"fault:fallback:{digest}"
+        return (
+            f"fault:internal:"
+            f"{internal_play_id}"
+        )
+
+    raw = "|".join(
+        [
+            clean_text(
+                library_item.get(
+                    "_Conference"
+                )
+            ),
+            clean_text(
+                library_item.get(
+                    "Id"
+                )
+            ),
+            (
+                clean_text(
+                    fields.get(
+                        "PLAY_#"
+                    )
+                )
+                or clean_text(
+                    play.get(
+                        "PlayNumber"
+                    )
+                )
+            ),
+            clean_text(
+                fields.get(
+                    "SET"
+                )
+            ),
+            clean_text(
+                fields.get(
+                    "Home"
+                )
+            ),
+            clean_text(
+                fields.get(
+                    "Away"
+                )
+            ),
+            clean_text(
+                fields.get(
+                    "FAULT"
+                )
+            ),
+        ]
+    )
+
+    digest = hashlib.sha256(
+        raw.encode(
+            "utf-8"
+        )
+    ).hexdigest()[
+        :24
+    ]
+
+    return (
+        f"fault:fallback:"
+        f"{digest}"
+    )
 
 
-def extract_faults_from_playlist(root_data, library_item):
-    playlist = root_data.get("Playlist") or root_data.get("playlist") or {}
-    title_info = parse_fault_playlist_title(library_item.get("Title"))
-    conference = library_item.get("_Conference", "")
+def extract_faults_from_playlist(
+    root_data,
+    library_item,
+    start_date=None,
+    end_date=None,
+):
+    """
+    Parse the actual DV Sport FAULT playlist schema.
+
+    Confirmed headings include:
+      SET
+      PLAY_#
+      Home
+      Away
+      FAULT
+      FAULT TEAM
+      REFEREE
+      PLAYER #
+      COMMENTS
+
+    The DV Sport FAULT value is stored as source metadata in:
+      dvsport_play_category
+
+    Reviewer play_category remains untouched.
+    """
+    playlist = (
+        root_data.get(
+            "Playlist"
+        )
+        or root_data.get(
+            "playlist"
+        )
+        or {}
+    )
+
+    match_info = resolve_fault_match_info(
+        root_data,
+        library_item,
+    )
+
+    match_date = match_info.get(
+        "date"
+    )
+
+    if (
+        match_date is not None
+        and start_date is not None
+        and end_date is not None
+        and not (
+            start_date
+            <= match_date
+            <= end_date
+        )
+    ):
+        return []
+
+    conference = library_item.get(
+        "_Conference",
+        "",
+    )
+
     records = []
-    for play in playlist.get("Plays") or playlist.get("plays") or []:
-        fields = fields_for_play(playlist, play)
-        home_score = clean_text(fields.get("Home"))
-        away_score = clean_text(fields.get("Away"))
-        score = f"{home_score}-{away_score}" if (home_score or away_score) else ""
-        source_category = (
-            clean_text(fields.get("FAULT TYPE"))
-            or clean_text(fields.get("PLAY CATEGORY"))
-            or clean_text(fields.get("CATEGORY"))
-            or clean_text(fields.get("DESCRIPTION"))
+
+    plays = (
+        playlist.get(
+            "Plays"
+        )
+        or playlist.get(
+            "plays"
+        )
+        or []
+    )
+
+    for play in plays:
+        fields = fields_for_play(
+            playlist,
+            play,
+        )
+
+        home_score = clean_text(
+            fields.get(
+                "Home"
+            )
+        )
+
+        away_score = clean_text(
+            fields.get(
+                "Away"
+            )
+        )
+
+        score = (
+            f"{home_score}-{away_score}"
+            if (
+                home_score
+                or away_score
+            )
+            else ""
+        )
+
+        # This is the key correction:
+        # the supplied playlist uses FAULT, not FAULT TYPE.
+        fault_value = (
+            clean_text(
+                fields.get(
+                    "FAULT"
+                )
+            )
+            or clean_text(
+                fields.get(
+                    "FAULT TYPE"
+                )
+            )
+            or clean_text(
+                fields.get(
+                    "PLAY CATEGORY"
+                )
+            )
+            or clean_text(
+                fields.get(
+                    "CATEGORY"
+                )
+            )
             or None
         )
+
         record = {
-            "dvsport_id": build_fault_dvsport_id(fields, play, library_item),
-            "conference": conference,
-            "match_date": (
-                title_info["date"].isoformat()
-                if title_info["date"] else None
-            ),
-            "match_name": title_info["match"],
-            "play_type": "Fault",
-            "set_number": to_int(fields.get("SET")),
-            "score": score,
-            "challenging_team": None,
-            "challenge_type": None,
-            "dvsport_crs_category": None,
-            "dvsport_play_category": source_category,
-            "challenge_result": None,
-            "challenge_length_seconds": None,
+            "dvsport_id":
+                build_fault_dvsport_id(
+                    fields,
+                    play,
+                    library_item,
+                ),
+
+            "conference":
+                conference,
+
+            "match_date":
+                (
+                    match_date.isoformat()
+                    if match_date
+                    else None
+                ),
+
+            "match_name":
+                (
+                    clean_text(
+                        match_info.get(
+                            "match"
+                        )
+                    )
+                    or clean_text(
+                        library_item.get(
+                            "Title"
+                        )
+                    )
+                    or "FAULTS"
+                ),
+
+            "play_type":
+                "Fault",
+
+            "set_number":
+                to_int(
+                    fields.get(
+                        "SET"
+                    )
+                ),
+
+            "score":
+                score,
+
+            "challenging_team":
+                None,
+
+            "challenge_type":
+                None,
+
+            "dvsport_crs_category":
+                None,
+
+            "dvsport_play_category":
+                fault_value,
+
+            "challenge_result":
+                None,
+
+            "challenge_length_seconds":
+                None,
         }
-        records.append(
-            (record, extract_video_angles(root_data, playlist, play))
+
+        angles = extract_video_angles(
+            root_data,
+            playlist,
+            play,
         )
+
+        records.append(
+            (
+                record,
+                angles,
+            )
+        )
+
     return records
 
 
-def load_fault_group_records(session, group):
-    combined_errors = []
-    for item in group["combined"]:
-        try:
-            root_data = get_playlist_data(session, item["Url"])
-            records = extract_faults_from_playlist(root_data, item)
-            if records:
-                return records, "combined", item, combined_errors
-        except Exception as exc:
-            combined_errors.append({"title": clean_text(item.get("Title")), "error": str(exc)})
+def load_fault_group_records(
+    session,
+    group,
+    start_date=None,
+    end_date=None,
+):
+    """
+    Load all candidate playlists in the discovery group and deduplicate
+    by stable fault dvsport_id.
+    """
     all_records = []
-    individual_errors = []
-    for item in group["individual"]:
+    errors = []
+
+    candidates = (
+        list(
+            group.get(
+                "combined",
+                [],
+            )
+        )
+        + list(
+            group.get(
+                "individual",
+                [],
+            )
+        )
+    )
+
+    for item in candidates:
         try:
-            root_data = get_playlist_data(session, item["Url"])
-            all_records.extend(extract_faults_from_playlist(root_data, item))
+            root_data = get_playlist_data(
+                session,
+                item[
+                    "Url"
+                ],
+            )
+
+            all_records.extend(
+                extract_faults_from_playlist(
+                    root_data,
+                    item,
+                    start_date=
+                        start_date,
+                    end_date=
+                        end_date,
+                )
+            )
+
         except Exception as exc:
-            individual_errors.append({"title": clean_text(item.get("Title")), "error": str(exc)})
+            errors.append(
+                {
+                    "title":
+                        clean_text(
+                            item.get(
+                                "Title"
+                            )
+                        ),
+                    "error":
+                        str(
+                            exc
+                        ),
+                }
+            )
+
     deduped = {}
+
     for record, angles in all_records:
-        deduped[record["dvsport_id"]] = (record, angles)
-    return list(deduped.values()), "individual", None, combined_errors + individual_errors
+        deduped[
+            record[
+                "dvsport_id"
+            ]
+        ] = (
+            record,
+            angles,
+        )
+
+    return (
+        list(
+            deduped.values()
+        ),
+        "playlist",
+        None,
+        errors,
+    )
 
 
 # DATABASE
@@ -2258,6 +2833,8 @@ def run_dvsport_sync(
                 summary["challenges_found"],
             pois_found=
                 summary["pois_found"],
+            faults_found=
+                summary["faults_found"],
             plays_inserted=
                 summary["plays_inserted"],
             plays_updated=
@@ -2359,6 +2936,8 @@ def run_dvsport_sync(
                 summary["challenges_found"],
             pois_found=
                 summary["pois_found"],
+            faults_found=
+                summary["faults_found"],
             plays_inserted=
                 summary["plays_inserted"],
             plays_updated=
@@ -2461,14 +3040,28 @@ def run_dvsport_sync(
 
     for key, group in sorted(fault_groups.items(), key=lambda pair: pair[0]):
         completed_work += 1
-        conference, match_date, match_name = key
+        conference = key[0]
+
+        candidates = (
+            group.get("combined", [])
+            + group.get("individual", [])
+        )
+
+        fault_title = (
+            clean_text(
+                candidates[0].get("Title")
+            )
+            if candidates
+            else "FAULTS"
+        )
+
         fraction = 0.10 + 0.87 * ((completed_work - 1) / max(total_work, 1))
 
         emit_progress(
             progress_callback,
             fraction,
             "Syncing faults",
-            f"{conference} • {match_date} • {match_name}",
+            f"{conference} • {fault_title}",
             current_item=completed_work,
             total_items=total_work,
             challenges_found=summary["challenges_found"],
@@ -2480,7 +3073,12 @@ def run_dvsport_sync(
 
         try:
             records, source_mode, selected_combined, fault_errors = (
-                load_fault_group_records(session, group)
+                load_fault_group_records(
+                    session,
+                    group,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
             )
             summary["faults_found"] += len(records)
             imported = import_records(supabase, records)
@@ -2501,7 +3099,7 @@ def run_dvsport_sync(
             summary["errors"].append({
                 "type": "Fault",
                 "conference": conference,
-                "title": f"{match_date} - {match_name}",
+                "title": fault_title,
                 "error": str(exc),
             })
 
