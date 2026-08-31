@@ -394,6 +394,40 @@ if run_sync:
     if result:
         st.write("")
 
+        # Keep the results page backward-compatible with an older
+        # services/dvsport_sync.py during deployment.  A mixed deployment
+        # should show a clear warning instead of crashing with KeyError.
+        def result_count(key):
+            value = result.get(key, 0)
+            try:
+                return int(value or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        def result_float(key):
+            value = result.get(key, 0)
+            try:
+                return float(value or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        fault_summary_available = all(
+            key in result
+            for key in (
+                "faults_found",
+                "fault_match_groups",
+            )
+        )
+
+        if not fault_summary_available:
+            st.error(
+                "DV Sport sync file mismatch detected: this page supports "
+                "FAULTS, but services/dvsport_sync.py is still returning the "
+                "older Challenge/POI-only result format. Replace BOTH "
+                "services/dvsport_sync.py and views/dvsport_sync.py with the "
+                "matching files from the update package, then rerun the sync."
+            )
+
         render_section_label(
             "Sync Results"
         )
@@ -413,31 +447,31 @@ if run_sync:
         with r1:
             st.metric(
                 "Challenges",
-                f"{result['challenges_found']:,}",
+                f"{result_count('challenges_found'):,}",
             )
 
         with r2:
             st.metric(
                 "POIs",
-                f"{result['pois_found']:,}",
+                f"{result_count('pois_found'):,}",
             )
 
         with r3:
             st.metric(
                 "FAULTS",
-                f"{result['faults_found']:,}",
+                f"{result_count('faults_found'):,}",
             )
 
         with r4:
             st.metric(
                 "New Plays",
-                f"{result['plays_inserted']:,}",
+                f"{result_count('plays_inserted'):,}",
             )
 
         with r5:
             st.metric(
                 "Refreshed Plays",
-                f"{result['plays_updated']:,}",
+                f"{result_count('plays_updated'):,}",
             )
 
         r6, r7, r8, r9, r10 = st.columns(
@@ -447,25 +481,25 @@ if run_sync:
         with r6:
             st.metric(
                 "Challenge Playlists",
-                f"{result['challenge_playlists']:,}",
+                f"{result_count('challenge_playlists'):,}",
             )
 
         with r7:
             st.metric(
                 "POI Match Groups",
-                f"{result['poi_match_groups']:,}",
+                f"{result_count('poi_match_groups'):,}",
             )
 
         with r8:
             st.metric(
                 "FAULT Match Groups",
-                f"{result['fault_match_groups']:,}",
+                f"{result_count('fault_match_groups'):,}",
             )
 
         with r9:
             st.metric(
                 "POI Combined",
-                f"{result['poi_combined_groups']:,}",
+                f"{result_count('poi_combined_groups'):,}",
                 "Used combined POIS",
                 delta_color="off",
             )
@@ -473,7 +507,7 @@ if run_sync:
         with r10:
             st.metric(
                 "POI Fallback",
-                f"{result['poi_fallback_groups']:,}",
+                f"{result_count('poi_fallback_groups'):,}",
                 "Used individual POIs",
                 delta_color="off",
             )
@@ -485,30 +519,28 @@ if run_sync:
         with a1:
             st.metric(
                 "New Video Clips",
-                f"{result['angles_inserted']:,}",
+                f"{result_count('angles_inserted'):,}",
             )
 
         with a2:
             st.metric(
                 "Updated Clips",
-                f"{result['angles_updated']:,}",
+                f"{result_count('angles_updated'):,}",
             )
 
         with a3:
             st.metric(
                 "Removed Stale Clips",
-                f"{result['angles_deleted']:,}",
+                f"{result_count('angles_deleted'):,}",
             )
 
         with a4:
             st.metric(
                 "Elapsed",
-                f"{result['elapsed_seconds']:.1f}s",
+                f"{result_float('elapsed_seconds'):.1f}s",
             )
 
-        errors = (
-            result["errors"]
-        )
+        errors = result.get("errors", []) or []
 
         if errors:
             st.warning(
