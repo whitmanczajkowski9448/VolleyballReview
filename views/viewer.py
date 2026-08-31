@@ -249,9 +249,7 @@ def queue_row(play, number):
     )
 
     return {
-        "Review": (
-            f"?review_play_id={play.get('id')}"
-        ),
+        "Review": "Review →",
         "#": number,
         "Status": normalized_review_status(
             play.get("review_status")
@@ -331,16 +329,9 @@ def initialize(key, value):
 
 
 def current_focus_play_id():
-    value = st.query_params.get(
-        "review_play_id"
+    value = st.session_state.get(
+        "viewer_focus_play_id"
     )
-
-    if isinstance(value, list):
-        value = (
-            value[0]
-            if value
-            else None
-        )
 
     try:
         return int(value)
@@ -352,13 +343,10 @@ def current_focus_play_id():
 
 
 def clear_focus_mode():
-    if (
-        "review_play_id"
-        in st.query_params
-    ):
-        del st.query_params[
-            "review_play_id"
-        ]
+    st.session_state.pop(
+        "viewer_focus_play_id",
+        None,
+    )
 
 
 
@@ -1210,7 +1198,7 @@ with st.expander(
     st.caption(
         (
             f"{len(filtered_plays):,} play(s) match the current filters. "
-            "Click a row or use the Review link to open it."
+            "Click any row to review that exact play."
         )
     )
 
@@ -1245,9 +1233,8 @@ with st.expander(
             f"{st.session_state['viewer_queue_reset']}"
         ),
         column_config={
-            "Review": st.column_config.LinkColumn(
+            "Review": st.column_config.TextColumn(
                 "Review",
-                display_text="Review",
                 width="small",
             ),
             "#": st.column_config.NumberColumn(
@@ -1333,15 +1320,40 @@ with st.expander(
             0 <= clicked_index
             < len(filtered_plays)
         ):
-            st.session_state[
-                "viewer_selected_play_id"
-            ] = filtered_plays[
+            clicked_id = filtered_plays[
                 clicked_index
             ]["id"]
 
+            selected_changed = (
+                st.session_state.get(
+                    "viewer_selected_play_id"
+                )
+                != clicked_id
+            )
 
-# Review hyperlinks must open the exact play requested, even when
-# that play would not be the first item in the current filtered queue.
+            focus_changed = (
+                st.session_state.get(
+                    "viewer_focus_play_id"
+                )
+                != clicked_id
+            )
+
+            st.session_state[
+                "viewer_selected_play_id"
+            ] = clicked_id
+
+            st.session_state[
+                "viewer_focus_play_id"
+            ] = clicked_id
+
+            if (
+                selected_changed
+                or focus_changed
+            ):
+                st.rerun()
+
+
+# Focused review opens the exact play selected in the queue.
 focus_play = None
 
 if focus_play_id is not None:
