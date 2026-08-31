@@ -468,7 +468,7 @@ with k1:
     render_kpi(
         "Total Plays",
         f"{total_plays:,}",
-        "Challenges + POIs",
+        "Challenges + POIs + FAULTS",
         "ncaa",
     )
 

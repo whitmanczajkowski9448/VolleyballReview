@@ -18,6 +18,13 @@ from services.challenge_download import (
 from services.challenge_email import (
     render_email_challenge_button,
 )
+from services.review_taxonomy import (
+    NCAA_CHALLENGE_CATEGORIES,
+    TOUCH_CONTEXTS,
+    ORIGINAL_DECISIONS,
+    CRS_OUTCOMES,
+    PLAY_CATEGORIES,
+)
 
 
 
@@ -113,6 +120,12 @@ def normalized_play_type(value):
     }:
         return "POI"
 
+    if text in {
+        "FAULT",
+        "FAULTS",
+    }:
+        return "Fault"
+
     return clean_text(value) or "Unknown"
 
 
@@ -176,6 +189,9 @@ def normalize_outcome(play):
 def challenge_category_for_queue(play):
     return (
         clean_text(
+            play.get("ncaa_challenge_category")
+        )
+        or clean_text(
             play.get("crs_category")
         )
         or "Unclassified"
@@ -670,8 +686,8 @@ with st.expander(
     with f1:
         play_type_filter = st.selectbox(
             "Play Type",
-            ["All", "Challenge", "POI"],
-            index=["All", "Challenge", "POI"].index("Challenge"),
+            ["All", "Challenge", "POI", "Fault"],
+            index=["All", "Challenge", "POI", "Fault"].index("Challenge"),
             key="editor_filter_play_type",
         )
 
@@ -755,7 +771,7 @@ with st.expander(
 
     with c2:
         crs_category_filter = st.selectbox(
-            "CRS Category",
+            "NCAA Challenge Category",
             ["All"] + crs_categories,
             key="editor_filter_crs_category",
         )
@@ -1444,78 +1460,11 @@ else:
 
 
 # ============================================================
-# CHALLENGE CRS OPTIONS
+# ============================================================
+# NCAA REVIEW TAXONOMY
 # ============================================================
 
-CRS_CATEGORIES = [
-    "",
-    "Ball ruled in or out",
-    "Ball contacting a player",
-    "Net fault by player",
-    "Attack line fault",
-    "Service foot fault",
-    "Center line fault",
-]
-
-TOUCH_CONTEXTS = [
-    "",
-    "IN/OUT",
-    "BRA/BRB/RO",
-    "2 or 4 HITS",
-]
-
-ORIGINAL_DECISIONS = {
-    "Ball ruled in or out": [
-        "",
-        "Ball in",
-        "Ball out",
-        "Successful pancake",
-        "Unsuccessful pancake",
-    ],
-
-    "Ball contacting a player": [
-        "",
-        "Touch",
-        "No touch",
-    ],
-
-    "Net fault by player": [
-        "",
-        "Net fault",
-        "No net fault",
-    ],
-
-    "Attack line fault": [
-        "",
-        "Back-row attack",
-        "Not a back-row attack",
-        "Libero in the front zone",
-        "Libero not in the front zone",
-    ],
-
-    "Service foot fault": [
-        "",
-        "Foot fault",
-        "No foot fault",
-    ],
-
-    "Center line fault": [
-        "",
-        "CL fault",
-        "No CL fault",
-    ],
-
-    "": [""],
-}
-
-CRS_OUTCOMES = [
-    "",
-    "Original outcome confirmed",
-    "Original outcome reversed",
-    "Original outcome stands",
-    "Mechanical or video failure",
-]
-
+CRS_CATEGORIES = NCAA_CHALLENGE_CATEGORIES
 REVIEW_STATUSES = [
     "Not Viewed",
     "Needs Review",
@@ -1523,12 +1472,23 @@ REVIEW_STATUSES = [
 ]
 
 
-# ============================================================
 # SESSION STATE
 # ============================================================
 
 category_key = (
     f"category_{play_id}"
+)
+
+play_category_key = (
+    f"play_category_{play_id}"
+)
+
+play_category_other_key = (
+    f"play_category_other_{play_id}"
+)
+
+starred_key = (
+    f"starred_{play_id}"
 )
 
 touch_key = (
@@ -1593,8 +1553,28 @@ unusable_notes_key = (
 
 initialize(
     category_key,
-    play.get("crs_category")
+    play.get("ncaa_challenge_category")
+    or play.get("crs_category")
     or "",
+)
+
+initialize(
+    play_category_key,
+    play.get("play_category")
+    or "",
+)
+
+initialize(
+    play_category_other_key,
+    play.get("play_category_other")
+    or "",
+)
+
+initialize(
+    starred_key,
+    bool(
+        play.get("is_starred")
+    ),
 )
 
 initialize(
@@ -1726,11 +1706,30 @@ initialize(
 
 if is_challenge:
     render_section_label(
-        "CRS Classification"
+        "NCAA Challenge Classification"
+    )
+
+    dvsport_crs = (
+        clean_text(
+            play.get("dvsport_crs_category")
+        )
+        or clean_text(
+            play.get("challenge_type")
+        )
+    )
+
+    st.text_input(
+        "DV Sport CRS / Source Category",
+        value=dvsport_crs,
+        disabled=True,
+        help=(
+            "Imported source metadata from DV Sport. "
+            "This field is not changed by reviewer tagging."
+        ),
     )
 
     category = st.selectbox(
-        "Challenge Category",
+        "NCAA Challenge Category",
         CRS_CATEGORIES,
         key=category_key,
     )
@@ -1869,7 +1868,7 @@ if is_challenge:
         )
 
 else:
-    # POIs do not use challenge-only CRS fields.
+    # POIs and FAULTS do not use challenge-only NCAA outcome fields.
     category = play.get(
         "crs_category"
     ) or ""
@@ -1896,6 +1895,52 @@ else:
 
 
 # ============================================================
+# ============================================================
+# PLAY CLASSIFICATION — ALL PLAY TYPES
+# ============================================================
+
+render_section_label(
+    "Play Classification"
+)
+
+play_classification = st.selectbox(
+    "Play / Fault Category",
+    PLAY_CATEGORIES,
+    key=play_category_key,
+    help=(
+        "Reviewer-controlled volleyball classification. "
+        "Available for Challenges, POIs, and imported FAULTS."
+    ),
+)
+
+if play_classification == "Other":
+    play_classification_other = st.text_input(
+        "Other Play Category",
+        key=play_category_other_key,
+        placeholder="Enter a short custom play/fault category",
+    )
+else:
+    play_classification_other = ""
+
+is_starred = st.checkbox(
+    "★ Star this play",
+    key=starred_key,
+    help=(
+        "Favorite this Challenge, POI, or FAULT so it can be "
+        "quickly filtered and found later."
+    ),
+)
+
+dvsport_play_category = clean_text(
+    play.get("dvsport_play_category")
+)
+
+if dvsport_play_category:
+    st.caption(
+        f"DV Sport source category: {dvsport_play_category}"
+    )
+
+
 # RECORD USE — CHALLENGES ONLY
 # ============================================================
 
@@ -2156,9 +2201,23 @@ review_status = st.radio(
 # ============================================================
 
 original_values = {
-    "crs_category":
-        play.get("crs_category")
+    "ncaa_challenge_category":
+        play.get("ncaa_challenge_category")
+        or play.get("crs_category")
         or "",
+
+    "play_category":
+        play.get("play_category")
+        or "",
+
+    "play_category_other":
+        play.get("play_category_other")
+        or "",
+
+    "is_starred":
+        bool(
+            play.get("is_starred")
+        ),
 
     "crs_touch_context":
         play.get(
@@ -2245,8 +2304,17 @@ original_values = {
 
 
 current_values = {
-    "crs_category":
+    "ncaa_challenge_category":
         category,
+
+    "play_category":
+        play_classification,
+
+    "play_category_other":
+        play_classification_other,
+
+    "is_starred":
+        is_starred,
 
     "crs_touch_context":
         touch_context,
@@ -2357,8 +2425,20 @@ def save_current_review():
         return False
 
     update_data = {
-        "crs_category":
+        "ncaa_challenge_category":
             category,
+
+        "play_category":
+            play_classification,
+
+        "play_category_other":
+            (
+                play_classification_other
+                or None
+            ),
+
+        "is_starred":
+            is_starred,
 
         "crs_touch_context":
             touch_context

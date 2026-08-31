@@ -19,6 +19,7 @@ from services.challenge_download import (
 from services.challenge_email import (
     render_email_challenge_button,
 )
+from services.review_taxonomy import PLAY_CATEGORIES
 
 
 
@@ -111,6 +112,12 @@ def normalized_play_type(value):
     }:
         return "POI"
 
+    if text in {
+        "FAULT",
+        "FAULTS",
+    }:
+        return "Fault"
+
     return clean_text(value) or "Unknown"
 
 
@@ -174,7 +181,10 @@ def normalize_outcome(play):
 def challenge_category_for_queue(play):
     return (
         clean_text(
-            play.get("crs_category")
+            play.get("ncaa_challenge_category")
+        )
+        or clean_text(
+            play.get("ncaa_challenge_category") or play.get("crs_category")
         )
         or "Unclassified"
     )
@@ -282,7 +292,7 @@ def queue_row(play, number):
         "Challenge Type": clean_text(
             play.get("challenge_type")
         ),
-        "CRS Category": (
+        "NCAA Challenge Category": (
             challenge_category_for_queue(play)
             if play_type == "Challenge"
             else ""
@@ -617,8 +627,8 @@ with st.expander(
     with f1:
         play_type_filter = st.selectbox(
             "Play Type",
-            ["All", "Challenge", "POI"],
-            index=["All", "Challenge", "POI"].index("All"),
+            ["All", "Challenge", "POI", "Fault"],
+            index=["All", "Challenge", "POI", "Fault"].index("All"),
             key="viewer_filter_play_type",
         )
 
@@ -702,7 +712,7 @@ with st.expander(
 
     with c2:
         crs_category_filter = st.selectbox(
-            "CRS Category",
+            "NCAA Challenge Category",
             ["All"] + crs_categories,
             key="viewer_filter_crs_category",
         )
@@ -889,7 +899,7 @@ for item in plays:
                 clean_text(item.get("score")),
                 clean_text(item.get("challenging_team")),
                 clean_text(item.get("challenge_type")),
-                clean_text(item.get("crs_category")),
+                clean_text(item.get("ncaa_challenge_category") or item.get("crs_category")),
                 clean_text(item.get("crs_outcome")),
                 clean_text(item.get("reviewer_notes")),
                 clean_text(item.get("weekly_summary_note")),
@@ -940,7 +950,7 @@ def browser_play_label(item, position, total):
     score_text = clean_text(item.get("score"))
     team_text = clean_text(item.get("challenging_team"))
     type_text = clean_text(item.get("challenge_type"))
-    category_text = clean_text(item.get("crs_category"))
+    category_text = clean_text(item.get("ncaa_challenge_category") or item.get("crs_category"))
     status_text = item["_queue_status"]
 
     details = [
@@ -1065,6 +1075,9 @@ with st.container(border=True):
 
     with top_left:
         st.caption("CURRENTLY VIEWING")
+
+        if play.get("is_starred"):
+            st.markdown("### ★ STARRED PLAY")
         st.markdown(
             f"## {clean_value(play.get('match_name'), 'Play')}"
         )
@@ -1095,7 +1108,7 @@ with st.container(border=True):
 
         detail_parts = [
             clean_text(play.get("challenge_type")),
-            clean_text(play.get("crs_category")),
+            clean_text(play.get("ncaa_challenge_category") or play.get("crs_category")),
             clean_text(play.get("crs_outcome")),
         ]
         detail_parts = [part for part in detail_parts if part]
@@ -1543,11 +1556,11 @@ r1, r2 = st.columns(2)
 
 with r1:
     st.caption(
-        "CRS Category"
+        "NCAA Challenge Category"
     )
     st.write(
         clean_value(
-            play.get("crs_category")
+            play.get("ncaa_challenge_category") or play.get("crs_category")
         )
     )
 

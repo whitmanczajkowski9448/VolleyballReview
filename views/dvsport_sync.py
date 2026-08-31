@@ -28,7 +28,7 @@ require_admin()
 render_page_header(
     "DV Sport Sync",
     (
-        "Pull all 2026 challenges and plays of interest from "
+        "Pull all 2026 challenges, plays of interest, and FAULTS from "
         "DV Sport and safely refresh the review database."
     ),
     eyebrow="NCAA WVB • DATA CONNECTION",
@@ -78,8 +78,8 @@ with st.container(
     with c3:
         st.metric(
             "Import Types",
-            "2",
-            "Challenges + POIs",
+            "3",
+            "Challenges + POIs + FAULTS",
             delta_color="off",
         )
 
@@ -95,7 +95,7 @@ with st.container(
 
     st.caption(
         "Current scope: Big Ten • MVC • MAC • "
-        "ALL Challenges • ALL Plays of Interest"
+        "ALL Challenges • ALL Plays of Interest • ALL FAULTS"
     )
 
     if cookie_configured:
@@ -189,10 +189,11 @@ st.info(
     (
         "Challenges are pulled from each conference's "
         "REVIEWS / REVIEWS BY GAME library. POIs are pulled "
-        "from each conference's POI library. For POIs, the sync "
-        "uses the combined POIS playlist when available and "
-        "falls back to the individual POI - PLAY playlists when "
-        "needed. Existing reviewer work is preserved."
+        "from each conference's POI library. FAULTS are pulled "
+        "from each conference's FAULT or FAULTS library using the "
+        "same combined-playlist / individual-play fallback pattern. "
+        "Existing reviewer work, NCAA classifications, favorites, "
+        "and notes are preserved."
     )
 )
 
@@ -202,7 +203,7 @@ st.info(
 # ============================================================
 
 run_sync = st.button(
-    "Pull Challenges + POIs for Selected Dates",
+    "Pull Challenges + POIs + FAULTS for Selected Dates",
     type="primary",
     use_container_width=True,
     disabled=(
@@ -273,6 +274,10 @@ if run_sync:
 
             pois = event.get(
                 "pois_found"
+            )
+
+            faults = event.get(
+                "faults_found"
             )
 
             inserted = event.get(

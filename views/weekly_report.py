@@ -561,7 +561,7 @@ with k1:
 
 with k2:
     render_kpi(
-        "POIs",
+        "POIs / FAULTS",
         f"{total_pois:,}",
         "Plays of interest",
         "purple",
@@ -1015,6 +1015,6 @@ st.caption(
         f"{report_start:%m/%d/%Y} – "
         f"{report_end:%m/%d/%Y} • "
         f"{total_challenges:,} challenges • "
-        f"{total_pois:,} POIs"
+        f"{total_pois:,} POIs / FAULTS"
     )
 )

@@ -630,10 +630,29 @@ def email_body(
             "CRS Classification",
             [
                 (
-                    "Category",
+                    "DV Sport CRS category",
                     clean_line_value(
                         play.get(
+                            "dvsport_crs_category"
+                        )
+                    ),
+                ),
+                (
+                    "NCAA challenge category",
+                    clean_line_value(
+                        play.get(
+                            "ncaa_challenge_category"
+                        )
+                        or play.get(
                             "crs_category"
+                        )
+                    ),
+                ),
+                (
+                    "Play category",
+                    clean_line_value(
+                        play.get(
+                            "play_category"
                         )
                     ),
                 ),

@@ -1315,6 +1315,21 @@ def extract_challenges_from_playlist(
                 review_type
                 or None,
 
+            "dvsport_crs_category":
+                (
+                    clean_text(fields.get("CRS CATEGORY"))
+                    or clean_text(fields.get("CATEGORY"))
+                    or review_type
+                    or None
+                ),
+
+            "dvsport_play_category":
+                (
+                    clean_text(fields.get("PLAY CATEGORY"))
+                    or clean_text(fields.get("CATEGORY"))
+                    or None
+                ),
+
             "challenge_result":
                 review_result
                 or None,
@@ -1448,6 +1463,18 @@ def extract_pois_from_playlist(
             "challenge_type":
                 None,
 
+            "dvsport_crs_category":
+                None,
+
+            "dvsport_play_category":
+                (
+                    clean_text(fields.get("PLAY CATEGORY"))
+                    or clean_text(fields.get("POI TYPE"))
+                    or clean_text(fields.get("CATEGORY"))
+                    or clean_text(fields.get("DESCRIPTION"))
+                    or None
+                ),
+
             "challenge_result":
                 None,
 
@@ -1472,6 +1499,179 @@ def extract_pois_from_playlist(
 
 
 # ============================================================
+
+# ============================================================
+# FAULT PLAYLISTS
+# ============================================================
+
+def parse_fault_playlist_title(title):
+    result = {
+        "date": parse_leading_date(title),
+        "match": clean_text(title),
+    }
+    text = clean_text(title)
+    match = re.match(
+        (
+            r"^\d{2}[.\-]\d{2}[.\-]\d{2}\s*-\s*"
+            r"(?P<match>.+?)"
+            r"\s*-\s*FAULTS?"
+            r"(?:\s*-\s*PLAY\s+\d+)?"
+            r"(?:\s*-\s*\d{2}-\d{2}-\d{2})?$"
+        ),
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        result["match"] = match.group("match").strip()
+    return result
+
+
+def fault_match_key(item):
+    parsed = parse_fault_playlist_title(item.get("Title"))
+    match_date = parsed["date"]
+    return (
+        item.get("_Conference", ""),
+        match_date.isoformat() if match_date else "",
+        parsed["match"].upper(),
+    )
+
+
+def find_fault_playlist_groups(items, start_date, end_date):
+    groups = {}
+    for item in items:
+        item_id = clean_text(item.get("Id"))
+        url = clean_text(item.get("Url"))
+        title = clean_text(item.get("Title"))
+        conference = conference_from_id(item_id)
+        if conference is None:
+            continue
+        upper_id = item_id.upper()
+        expected1 = f"HOME/VIDEOS/{YEAR}/{conference}/FAULT/"
+        expected2 = f"HOME/VIDEOS/{YEAR}/{conference}/FAULTS/"
+        if not (
+            upper_id.startswith(expected1.upper())
+            or upper_id.startswith(expected2.upper())
+        ):
+            continue
+        if item.get("Type") != 0 or not url.upper().endswith(".DVPLAYLIST"):
+            continue
+        if not in_date_range(title, start_date, end_date):
+            continue
+        upper_title = title.upper()
+        is_individual = bool(
+            re.search(r"\s-\sFAULT\s-\sPLAY\s+\d+", upper_title)
+        )
+        is_combined = bool(
+            re.search(r"\s-\sFAULTS(?:\s-|$)", upper_title)
+        )
+        # Some DV Sport installs use FAULT - PLAY and no combined playlist.
+        if not (is_individual or is_combined):
+            continue
+        copy = dict(item)
+        copy["_Conference"] = conference
+        copy["_SourceType"] = "Fault"
+        key = fault_match_key(copy)
+        groups.setdefault(key, {"combined": [], "individual": []})
+        groups[key]["combined" if is_combined else "individual"].append(copy)
+
+    for group in groups.values():
+        group["combined"].sort(
+            key=lambda item: (
+                to_int(item.get("NumberOfPlays")) or -1,
+                to_int(item.get("LastModifiedTicks")) or 0,
+            ),
+            reverse=True,
+        )
+        group["individual"].sort(key=lambda item: clean_text(item.get("Title")))
+    return groups
+
+
+def build_fault_dvsport_id(fields, play, library_item):
+    play_id = clean_text(play.get("PlayId"))
+    if play_id:
+        return f"fault:play:{play_id}"
+    internal_play_id = clean_text(play.get("InternalPlayId"))
+    if internal_play_id:
+        return f"fault:internal:{internal_play_id}"
+    parsed = parse_fault_playlist_title(library_item.get("Title"))
+    raw = "|".join([
+        clean_text(library_item.get("_Conference")),
+        parsed["date"].isoformat() if parsed["date"] else "",
+        parsed["match"],
+        clean_text(fields.get("PLAY_#")) or clean_text(play.get("PlayNumber")),
+        clean_text(fields.get("SET")),
+        clean_text(fields.get("Home")),
+        clean_text(fields.get("Away")),
+    ])
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+    return f"fault:fallback:{digest}"
+
+
+def extract_faults_from_playlist(root_data, library_item):
+    playlist = root_data.get("Playlist") or root_data.get("playlist") or {}
+    title_info = parse_fault_playlist_title(library_item.get("Title"))
+    conference = library_item.get("_Conference", "")
+    records = []
+    for play in playlist.get("Plays") or playlist.get("plays") or []:
+        fields = fields_for_play(playlist, play)
+        home_score = clean_text(fields.get("Home"))
+        away_score = clean_text(fields.get("Away"))
+        score = f"{home_score}-{away_score}" if (home_score or away_score) else ""
+        source_category = (
+            clean_text(fields.get("FAULT TYPE"))
+            or clean_text(fields.get("PLAY CATEGORY"))
+            or clean_text(fields.get("CATEGORY"))
+            or clean_text(fields.get("DESCRIPTION"))
+            or None
+        )
+        record = {
+            "dvsport_id": build_fault_dvsport_id(fields, play, library_item),
+            "conference": conference,
+            "match_date": (
+                title_info["date"].isoformat()
+                if title_info["date"] else None
+            ),
+            "match_name": title_info["match"],
+            "play_type": "Fault",
+            "set_number": to_int(fields.get("SET")),
+            "score": score,
+            "challenging_team": None,
+            "challenge_type": None,
+            "dvsport_crs_category": None,
+            "dvsport_play_category": source_category,
+            "challenge_result": None,
+            "challenge_length_seconds": None,
+        }
+        records.append(
+            (record, extract_video_angles(root_data, playlist, play))
+        )
+    return records
+
+
+def load_fault_group_records(session, group):
+    combined_errors = []
+    for item in group["combined"]:
+        try:
+            root_data = get_playlist_data(session, item["Url"])
+            records = extract_faults_from_playlist(root_data, item)
+            if records:
+                return records, "combined", item, combined_errors
+        except Exception as exc:
+            combined_errors.append({"title": clean_text(item.get("Title")), "error": str(exc)})
+    all_records = []
+    individual_errors = []
+    for item in group["individual"]:
+        try:
+            root_data = get_playlist_data(session, item["Url"])
+            all_records.extend(extract_faults_from_playlist(root_data, item))
+        except Exception as exc:
+            individual_errors.append({"title": clean_text(item.get("Title")), "error": str(exc)})
+    deduped = {}
+    for record, angles in all_records:
+        deduped[record["dvsport_id"]] = (record, angles)
+    return list(deduped.values()), "individual", None, combined_errors + individual_errors
+
+
 # DATABASE
 # ============================================================
 
@@ -1934,9 +2134,18 @@ def run_dvsport_sync(
         )
     )
 
+    fault_groups = (
+        find_fault_playlist_groups(
+            library_items,
+            start_date,
+            end_date,
+        )
+    )
+
     total_work = (
         len(challenge_playlists)
         + len(poi_groups)
+        + len(fault_groups)
     )
 
     emit_progress(
@@ -1947,12 +2156,15 @@ def run_dvsport_sync(
             f"{start_date:%m/%d/%Y} through {end_date:%m/%d/%Y}: "
             f"found {len(challenge_playlists):,} challenge "
             f"match playlist(s) and {len(poi_groups):,} "
-            "match group(s) containing POIs."
+            "match group(s) containing POIs and "
+            f"{len(fault_groups):,} match group(s) containing FAULTS."
         ),
         challenge_playlists=
             len(challenge_playlists),
         poi_match_groups=
             len(poi_groups),
+        fault_match_groups=
+            len(fault_groups),
     )
 
     summary = {
@@ -1968,10 +2180,16 @@ def run_dvsport_sync(
         "poi_match_groups":
             len(poi_groups),
 
+        "fault_match_groups":
+            len(fault_groups),
+
         "challenges_found":
             0,
 
         "pois_found":
+            0,
+
+        "faults_found":
             0,
 
         "plays_inserted":
@@ -2236,6 +2454,59 @@ def run_dvsport_sync(
             REQUEST_DELAY_SECONDS
         )
 
+
+    # --------------------------------------------------------
+    # FAULTS
+    # --------------------------------------------------------
+
+    for key, group in sorted(fault_groups.items(), key=lambda pair: pair[0]):
+        completed_work += 1
+        conference, match_date, match_name = key
+        fraction = 0.10 + 0.87 * ((completed_work - 1) / max(total_work, 1))
+
+        emit_progress(
+            progress_callback,
+            fraction,
+            "Syncing faults",
+            f"{conference} • {match_date} • {match_name}",
+            current_item=completed_work,
+            total_items=total_work,
+            challenges_found=summary["challenges_found"],
+            pois_found=summary["pois_found"],
+            faults_found=summary["faults_found"],
+            plays_inserted=summary["plays_inserted"],
+            plays_updated=summary["plays_updated"],
+        )
+
+        try:
+            records, source_mode, selected_combined, fault_errors = (
+                load_fault_group_records(session, group)
+            )
+            summary["faults_found"] += len(records)
+            imported = import_records(supabase, records)
+            summary["plays_inserted"] += imported["inserted"]
+            summary["plays_updated"] += imported["updated"]
+            for angle_key in ("angles_inserted", "angles_updated", "angles_deleted"):
+                summary[angle_key] += imported[angle_key]
+
+            if not records and fault_errors:
+                for error in fault_errors:
+                    summary["errors"].append({
+                        "type": "Fault",
+                        "conference": conference,
+                        "title": error["title"],
+                        "error": error["error"],
+                    })
+        except Exception as exc:
+            summary["errors"].append({
+                "type": "Fault",
+                "conference": conference,
+                "title": f"{match_date} - {match_name}",
+                "error": str(exc),
+            })
+
+        time.sleep(REQUEST_DELAY_SECONDS)
+
     summary["elapsed_seconds"] = (
         time.time() - started
     )
@@ -2245,8 +2516,9 @@ def run_dvsport_sync(
         1.0,
         "Sync complete",
         (
-            f"{summary['challenges_found']:,} challenges and "
-            f"{summary['pois_found']:,} POIs processed."
+            f"{summary['challenges_found']:,} challenges, "
+            f"{summary['pois_found']:,} POIs, and "
+            f"{summary['faults_found']:,} FAULTS processed."
         ),
         **summary,
     )
