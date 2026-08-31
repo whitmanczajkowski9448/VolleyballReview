@@ -3,6 +3,7 @@ import re
 import time
 from datetime import date, datetime, timedelta
 from http.cookies import SimpleCookie
+from urllib.parse import unquote, urlsplit
 
 import requests
 from requests.cookies import RequestsCookieJar
@@ -102,6 +103,136 @@ def to_int(value):
 
 def normalize_field_name(name):
     return clean_text(name)
+
+
+# ============================================================
+# SYNC IDENTITY HELPERS
+# ============================================================
+
+def normalize_identity_text(value):
+    """
+    Normalize text only for record identity comparisons.
+
+    This deliberately does not change the stored display value.
+    """
+    text = clean_text(value).upper()
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def source_play_number(fields, play):
+    """Return the DV Sport play number in a stable text form."""
+    return (
+        clean_text(fields.get("PLAY_#"))
+        or clean_text(fields.get("PLAY #"))
+        or clean_text(fields.get("PLAY NUMBER"))
+        or clean_text(play.get("PlayNumber"))
+        or clean_text(play.get("playNumber"))
+    )
+
+
+def canonical_match_play_id(
+    prefix,
+    conference,
+    match_date,
+    match_name,
+    play_number,
+):
+    """
+    Build an ID that survives DV Sport playlist republishing.
+
+    POI and FAULT playlist snapshots can receive new playlist IDs and
+    sometimes new source PlayId/InternalPlayId values.  Conference + match
+    date + normalized match name + game play number is the stable identity.
+    """
+    if not play_number:
+        return ""
+
+    date_text = (
+        match_date.isoformat()
+        if isinstance(match_date, date)
+        else clean_text(match_date)
+    )
+
+    raw = "|".join(
+        [
+            normalize_identity_text(prefix),
+            normalize_identity_text(conference),
+            date_text,
+            normalize_identity_text(match_name),
+            normalized_play_number(play_number),
+        ]
+    )
+
+    digest = hashlib.sha256(
+        raw.encode("utf-8")
+    ).hexdigest()[:24]
+
+    return f"{prefix}:v2:{digest}"
+
+
+def normalized_media_identity(value):
+    """
+    Normalize a DV Sport video URL for duplicate matching.
+
+    Query strings/fragments are intentionally ignored because a media URL
+    can acquire temporary parameters without becoming a different clip.
+    """
+    url = clean_text(value)
+
+    if not url:
+        return ""
+
+    decoded = unquote(url)
+
+    try:
+        parsed = urlsplit(decoded)
+        host = parsed.netloc.lower()
+        path = re.sub(r"/+", "/", parsed.path).lower()
+        return f"{host}{path}"
+    except Exception:
+        return decoded.split("?", 1)[0].split("#", 1)[0].lower()
+
+
+def play_number_from_media_url(value):
+    """Recover PLAY ### from a DV Sport clip URL when available."""
+    text = unquote(clean_text(value))
+
+    match = re.search(
+        r"(?:^|[/\\])PLAY\s+0*(\d+)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    if not match:
+        return ""
+
+    try:
+        return str(int(match.group(1)))
+    except (TypeError, ValueError):
+        return clean_text(match.group(1))
+
+
+def normalized_play_number(value):
+    text = clean_text(value)
+
+    if not text:
+        return ""
+
+    try:
+        return str(int(float(text)))
+    except (TypeError, ValueError):
+        return text.upper()
+
+
+def public_database_record(record):
+    """
+    Remove transient sync-only keys before writing a play to Supabase.
+    """
+    return {
+        key: value
+        for key, value in record.items()
+        if not str(key).startswith("_sync_")
+    }
 
 
 # ============================================================
@@ -1086,63 +1217,63 @@ def build_poi_dvsport_id(
     library_item,
 ):
     """
-    Prefix POI identifiers so a POI cannot accidentally overwrite
-    a challenge record that happens to reference the same PlayId.
-    """
+    Build a POI identity that does not depend on the playlist snapshot.
 
-    play_id = clean_text(
-        play.get("PlayId")
+    DV Sport can republish a POI cutup with a different playlist ID and a
+    different source PlayId.  The match play number is stable, so use it
+    first.  Source IDs are only fallbacks for unusually incomplete data.
+    """
+    parsed = parse_poi_playlist_title(
+        library_item.get("Title")
+    )
+
+    play_number = source_play_number(
+        fields,
+        play,
+    )
+
+    canonical = canonical_match_play_id(
+        "poi",
+        library_item.get("_Conference", ""),
+        parsed.get("date"),
+        parsed.get("match"),
+        play_number,
+    )
+
+    if canonical:
+        return canonical
+
+    internal_play_id = (
+        clean_text(play.get("InternalPlayId"))
+        or clean_text(play.get("internalPlayId"))
+    )
+
+    if internal_play_id:
+        return f"poi:internal:{internal_play_id}"
+
+    play_id = (
+        clean_text(play.get("PlayId"))
+        or clean_text(play.get("playId"))
     )
 
     if play_id:
         return f"poi:play:{play_id}"
 
-    internal_play_id = clean_text(
-        play.get("InternalPlayId")
-    )
-
-    if internal_play_id:
-        return (
-            f"poi:internal:"
-            f"{internal_play_id}"
-        )
-
-    play_number = (
-        clean_text(
-            fields.get("PLAY_#")
-        )
-        or clean_text(
-            play.get("PlayNumber")
-        )
-    )
-
-    parsed = parse_poi_playlist_title(
-        library_item.get("Title")
-    )
-
     raw = "|".join(
         [
-            clean_text(
-                library_item.get(
-                    "_Conference"
-                )
+            normalize_identity_text(
+                library_item.get("_Conference", "")
             ),
             (
                 parsed["date"].isoformat()
-                if parsed["date"]
+                if parsed.get("date")
                 else ""
             ),
-            parsed["match"],
-            play_number,
-            clean_text(
-                fields.get("SET")
-            ),
-            clean_text(
-                fields.get("Home")
-            ),
-            clean_text(
-                fields.get("Away")
-            ),
+            normalize_identity_text(parsed.get("match")),
+            normalized_play_number(play_number),
+            clean_text(fields.get("SET")),
+            clean_text(fields.get("Home")),
+            clean_text(fields.get("Away")),
         ]
     )
 
@@ -1278,6 +1409,12 @@ def extract_challenges_from_playlist(
                     fields,
                     play,
                     library_item,
+                ),
+
+            "_sync_play_number":
+                source_play_number(
+                    fields,
+                    play,
                 ),
 
             "conference":
@@ -1429,6 +1566,12 @@ def extract_pois_from_playlist(
                     fields,
                     play,
                     library_item,
+                ),
+
+            "_sync_play_number":
+                source_play_number(
+                    fields,
+                    play,
                 ),
 
             "conference":
@@ -1729,53 +1872,59 @@ def resolve_fault_match_info(
     }
 
 
+def fault_match_key(item):
+    """
+    Group republished FAULTS snapshots for the same match together.
+    """
+    parsed = parse_fault_playlist_title(
+        item.get("Title")
+    )
+
+    match_date = parsed.get("date")
+    match_name = normalize_identity_text(
+        parsed.get("match")
+    )
+
+    if match_date and match_name:
+        return (
+            item.get("_Conference", ""),
+            match_date.isoformat(),
+            match_name,
+        )
+
+    # Extremely unusual title with no usable date/match: keep it isolated.
+    return (
+        item.get("_Conference", ""),
+        "",
+        normalize_identity_text(
+            item.get("Id") or item.get("Url")
+        ),
+    )
+
+
 def find_fault_playlist_groups(
     items,
     start_date,
     end_date,
 ):
     """
-    Discover real FAULT playlists.
+    Discover FAULT playlists and collapse republished snapshots by match.
 
-    Actual DV Sport structure confirmed from supplied data:
+    Actual DV Sport structure:
+      HOME/VIDEOS/<YEAR>/<CONFERENCE>/FAULTS/<playlist>.DVPLAYLIST
 
-      HOME/VIDEOS/<YEAR>/<CONFERENCE>/FAULTS
-
-    FAULTS is a sibling of POI.
-
-    Unlike the earlier implementation, this does NOT require playlist
-    titles to contain 'FAULTS' or 'FAULT - PLAY'. Every Type=0
-    .DVPLAYLIST beneath the plural /FAULTS/ directory is accepted.
-
-    If the playlist title has a leading date, we can filter it before
-    opening the playlist. If the title has no date, keep it as a
-    candidate and validate its date after fetching the playlist by
-    looking at the media path.
+    Multiple FAULTS playlists for one match are snapshots, not separate
+    logical sources.  They are grouped here so only the best snapshot is
+    imported later.
     """
     groups = {}
 
     for item in items:
-        item_id = clean_text(
-            item.get(
-                "Id"
-            )
-        )
+        item_id = clean_text(item.get("Id"))
+        url = clean_text(item.get("Url"))
+        title = clean_text(item.get("Title"))
 
-        url = clean_text(
-            item.get(
-                "Url"
-            )
-        )
-
-        title = clean_text(
-            item.get(
-                "Title"
-            )
-        )
-
-        conference = conference_from_id(
-            item_id
-        )
+        conference = conference_from_id(item_id)
 
         if conference is None:
             continue
@@ -1790,62 +1939,43 @@ def find_fault_playlist_groups(
         ):
             continue
 
-        if item.get(
-            "Type"
-        ) != 0:
+        if item.get("Type") != 0:
             continue
 
-        if not url.upper().endswith(
-            ".DVPLAYLIST"
-        ):
+        if not url.upper().endswith(".DVPLAYLIST"):
             continue
 
-        title_date = parse_leading_date(
-            title
-        )
+        title_date = parse_leading_date(title)
 
         if (
             title_date is not None
-            and not (
-                start_date
-                <= title_date
-                <= end_date
-            )
+            and not (start_date <= title_date <= end_date)
         ):
             continue
 
-        copy = dict(
-            item
-        )
+        copy = dict(item)
+        copy["_Conference"] = conference
+        copy["_SourceType"] = "Fault"
 
-        copy[
-            "_Conference"
-        ] = conference
+        key = fault_match_key(copy)
 
-        copy[
-            "_SourceType"
-        ] = "Fault"
+        if key not in groups:
+            groups[key] = {
+                "combined": [],
+                "individual": [],
+            }
 
-        # Treat each real playlist as its own discovery job.
-        # Stable DV Sport PlayId values prevent duplicates on import.
-        group_key = (
-            conference,
-            clean_text(
-                item.get(
-                    "Id"
-                )
+        groups[key]["combined"].append(copy)
+
+    # Prefer the fullest snapshot, then the newest snapshot.
+    for group in groups.values():
+        group["combined"].sort(
+            key=lambda item: (
+                to_int(item.get("NumberOfPlays")) or -1,
+                to_int(item.get("LastModifiedTicks")) or 0,
             ),
-            url,
+            reverse=True,
         )
-
-        groups[
-            group_key
-        ] = {
-            "combined": [
-                copy
-            ],
-            "individual": [],
-        }
 
     return groups
 
@@ -1854,104 +1984,70 @@ def build_fault_dvsport_id(
     fields,
     play,
     library_item,
+    match_info=None,
 ):
-    play_id = (
-        clean_text(
-            play.get(
-                "PlayId"
-            )
-        )
-        or clean_text(
-            play.get(
-                "playId"
-            )
-        )
+    """
+    Build a FAULT identity that survives playlist republishing.
+    """
+    match_info = match_info or parse_fault_playlist_title(
+        library_item.get("Title")
     )
 
-    if play_id:
-        return (
-            f"fault:play:"
-            f"{play_id}"
-        )
+    play_number = source_play_number(
+        fields,
+        play,
+    )
+
+    canonical = canonical_match_play_id(
+        "fault",
+        library_item.get("_Conference", ""),
+        match_info.get("date"),
+        match_info.get("match"),
+        play_number,
+    )
+
+    if canonical:
+        return canonical
 
     internal_play_id = (
-        clean_text(
-            play.get(
-                "InternalPlayId"
-            )
-        )
-        or clean_text(
-            play.get(
-                "internalPlayId"
-            )
-        )
+        clean_text(play.get("InternalPlayId"))
+        or clean_text(play.get("internalPlayId"))
     )
 
     if internal_play_id:
-        return (
-            f"fault:internal:"
-            f"{internal_play_id}"
-        )
+        return f"fault:internal:{internal_play_id}"
+
+    play_id = (
+        clean_text(play.get("PlayId"))
+        or clean_text(play.get("playId"))
+    )
+
+    if play_id:
+        return f"fault:play:{play_id}"
 
     raw = "|".join(
         [
-            clean_text(
-                library_item.get(
-                    "_Conference"
-                )
-            ),
-            clean_text(
-                library_item.get(
-                    "Id"
-                )
+            normalize_identity_text(
+                library_item.get("_Conference", "")
             ),
             (
-                clean_text(
-                    fields.get(
-                        "PLAY_#"
-                    )
-                )
-                or clean_text(
-                    play.get(
-                        "PlayNumber"
-                    )
-                )
+                match_info["date"].isoformat()
+                if isinstance(match_info.get("date"), date)
+                else clean_text(match_info.get("date"))
             ),
-            clean_text(
-                fields.get(
-                    "SET"
-                )
-            ),
-            clean_text(
-                fields.get(
-                    "Home"
-                )
-            ),
-            clean_text(
-                fields.get(
-                    "Away"
-                )
-            ),
-            clean_text(
-                fields.get(
-                    "FAULT"
-                )
-            ),
+            normalize_identity_text(match_info.get("match")),
+            normalized_play_number(play_number),
+            clean_text(fields.get("SET")),
+            clean_text(fields.get("Home")),
+            clean_text(fields.get("Away")),
         ]
     )
 
     digest = hashlib.sha256(
-        raw.encode(
-            "utf-8"
-        )
-    ).hexdigest()[
-        :24
-    ]
+        raw.encode("utf-8")
+    ).hexdigest()[:24]
 
-    return (
-        f"fault:fallback:"
-        f"{digest}"
-    )
+    return f"fault:fallback:{digest}"
 
 
 def extract_faults_from_playlist(
@@ -2086,6 +2182,13 @@ def extract_faults_from_playlist(
                     fields,
                     play,
                     library_item,
+                    match_info=match_info,
+                ),
+
+            "_sync_play_number":
+                source_play_number(
+                    fields,
+                    play,
                 ),
 
             "conference":
@@ -2168,80 +2271,62 @@ def load_fault_group_records(
     end_date=None,
 ):
     """
-    Load all candidate playlists in the discovery group and deduplicate
-    by stable fault dvsport_id.
+    Load one authoritative FAULTS snapshot for the match.
+
+    Candidates are pre-sorted by NumberOfPlays and LastModifiedTicks.
+    The first usable snapshot wins.  We intentionally do NOT merge every
+    historical snapshot, which was one cause of duplicate FAULT imports.
     """
-    all_records = []
     errors = []
 
     candidates = (
-        list(
-            group.get(
-                "combined",
-                [],
-            )
-        )
-        + list(
-            group.get(
-                "individual",
-                [],
-            )
-        )
+        list(group.get("combined", []))
+        + list(group.get("individual", []))
     )
 
     for item in candidates:
         try:
             root_data = get_playlist_data(
                 session,
-                item[
-                    "Url"
-                ],
+                item["Url"],
             )
 
-            all_records.extend(
-                extract_faults_from_playlist(
-                    root_data,
-                    item,
-                    start_date=
-                        start_date,
-                    end_date=
-                        end_date,
+            records = extract_faults_from_playlist(
+                root_data,
+                item,
+                start_date=start_date,
+                end_date=end_date,
+            )
+
+            if not records:
+                continue
+
+            deduped = {}
+
+            for record, angles in records:
+                deduped[record["dvsport_id"]] = (
+                    record,
+                    angles,
                 )
+
+            return (
+                list(deduped.values()),
+                "snapshot",
+                item,
+                errors,
             )
 
         except Exception as exc:
             errors.append(
                 {
-                    "title":
-                        clean_text(
-                            item.get(
-                                "Title"
-                            )
-                        ),
-                    "error":
-                        str(
-                            exc
-                        ),
+                    "title": clean_text(item.get("Title")),
+                    "error": str(exc),
                 }
             )
 
-    deduped = {}
-
-    for record, angles in all_records:
-        deduped[
-            record[
-                "dvsport_id"
-            ]
-        ] = (
-            record,
-            angles,
-        )
-
     return (
-        list(
-            deduped.values()
-        ),
-        "playlist",
+        [],
+        "snapshot",
         None,
         errors,
     )
@@ -2258,57 +2343,265 @@ def get_existing_play(
         supabase
         .table("plays")
         .select(
-            "id,dvsport_id"
+            "id,dvsport_id,conference,match_date,match_name,play_type,"
+            "set_number,score,dvsport_play_category,challenge_type"
         )
-        .eq(
-            "dvsport_id",
-            dvsport_id,
-        )
+        .eq("dvsport_id", dvsport_id)
         .limit(1)
         .execute()
     )
 
-    return (
-        response.data[0]
-        if response.data
-        else None
+    return response.data[0] if response.data else None
+
+
+def normalized_sync_play_type(value):
+    text = normalize_identity_text(value)
+
+    if text in {"CHALLENGE", "CHALLENGES"}:
+        return "CHALLENGE"
+
+    if text in {
+        "POI",
+        "POIS",
+        "PLAY OF INTEREST",
+        "PLAYS OF INTEREST",
+    }:
+        return "POI"
+
+    if text in {"FAULT", "FAULTS"}:
+        return "FAULT"
+
+    return text
+
+
+def existing_candidates_for_record(
+    supabase,
+    record,
+):
+    """
+    Load a narrow same-day candidate set for duplicate matching.
+
+    The query uses conference/date/set/score when available, then source
+    type is normalized in Python so legacy values such as FAULT/FAULTS do
+    not prevent a match.
+    """
+    conference = clean_text(record.get("conference"))
+    match_date = clean_text(record.get("match_date"))
+    incoming_type = normalized_sync_play_type(
+        record.get("play_type")
     )
+
+    if not conference or not match_date or not incoming_type:
+        return []
+
+    query = (
+        supabase
+        .table("plays")
+        .select(
+            "id,dvsport_id,conference,match_date,match_name,play_type,"
+            "set_number,score,dvsport_play_category,challenge_type"
+        )
+        .eq("conference", conference)
+        .eq("match_date", match_date)
+    )
+
+    set_number = record.get("set_number")
+    score = clean_text(record.get("score"))
+
+    if set_number is not None:
+        query = query.eq("set_number", set_number)
+
+    if score:
+        query = query.eq("score", score)
+
+    response = query.execute()
+
+    return [
+        row
+        for row in (response.data or [])
+        if normalized_sync_play_type(
+            row.get("play_type")
+        ) == incoming_type
+    ]
+
+
+def video_angles_for_play(
+    supabase,
+    play_id,
+):
+    response = (
+        supabase
+        .table("video_angles")
+        .select("id,angle_name,video_url")
+        .eq("play_id", play_id)
+        .execute()
+    )
+
+    return response.data or []
+
+
+def secondary_existing_play_match(
+    supabase,
+    record,
+    angles,
+):
+    """
+    Match an incoming play to legacy database rows even when dvsport_id
+    changed between DV Sport playlist snapshots.
+
+    Match priority:
+      1. Any exact normalized media URL overlap.
+      2. Same match + same PLAY ### recovered from stored media URLs.
+
+    Both are substantially safer than matching on score alone.
+    """
+    candidates = existing_candidates_for_record(
+        supabase,
+        record,
+    )
+
+    if not candidates:
+        return None, 0
+
+    incoming_media = {
+        normalized_media_identity(angle.get("video_url"))
+        for angle in angles
+        if normalized_media_identity(angle.get("video_url"))
+    }
+
+    incoming_play_number = normalized_play_number(
+        record.get("_sync_play_number")
+    )
+
+    incoming_match = normalize_identity_text(
+        record.get("match_name")
+    )
+
+    exact_media_matches = []
+    play_number_matches = []
+
+    for candidate in candidates:
+        candidate_angles = video_angles_for_play(
+            supabase,
+            candidate["id"],
+        )
+
+        candidate_media = {
+            normalized_media_identity(angle.get("video_url"))
+            for angle in candidate_angles
+            if normalized_media_identity(angle.get("video_url"))
+        }
+
+        if incoming_media and (
+            incoming_media & candidate_media
+        ):
+            exact_media_matches.append(candidate)
+            continue
+
+        if not incoming_play_number:
+            continue
+
+        candidate_numbers = {
+            normalized_play_number(
+                play_number_from_media_url(
+                    angle.get("video_url")
+                )
+            )
+            for angle in candidate_angles
+        }
+        candidate_numbers.discard("")
+
+        if (
+            incoming_play_number in candidate_numbers
+            and incoming_match
+            and incoming_match
+            == normalize_identity_text(
+                candidate.get("match_name")
+            )
+        ):
+            play_number_matches.append(candidate)
+
+    matches = (
+        exact_media_matches
+        if exact_media_matches
+        else play_number_matches
+    )
+
+    if not matches:
+        return None, 0
+
+    # If old bad syncs already produced duplicates, do not create another.
+    # Pick one deterministic keeper without deleting reviewer data from any
+    # existing row. Existing duplicate cleanup can be handled separately.
+    matches.sort(
+        key=lambda row: str(row.get("id", ""))
+    )
+
+    return matches[0], len(matches)
 
 
 def upsert_play(
     supabase,
     record,
+    angles,
 ):
     """
-    Only DV Sport-owned fields are sent here.
-    Manual review/tagging fields are preserved.
+    Upsert without creating duplicate Challenge, POI, or FAULT rows.
+
+    Manual review/tagging fields are never part of the write payload.
     """
+    incoming_dvsport_id = record["dvsport_id"]
+
     existing = get_existing_play(
         supabase,
-        record["dvsport_id"],
+        incoming_dvsport_id,
+    )
+
+    matched_by_secondary_identity = False
+    existing_match_count = 0
+
+    if not existing:
+        (
+            existing,
+            existing_match_count,
+        ) = secondary_existing_play_match(
+            supabase,
+            record,
+            angles,
+        )
+
+        matched_by_secondary_identity = (
+            existing is not None
+        )
+
+    database_record = public_database_record(
+        record
     )
 
     if existing:
+        # If this was matched through media/play-number identity, writing
+        # the incoming canonical dvsport_id migrates the legacy row in
+        # place.  The exact-ID lookup above already proved the canonical
+        # ID is not assigned to another row.
         (
             supabase
             .table("plays")
-            .update(record)
-            .eq(
-                "id",
-                existing["id"],
-            )
+            .update(database_record)
+            .eq("id", existing["id"])
             .execute()
         )
 
         return (
             existing["id"],
             "updated",
+            matched_by_secondary_identity,
+            existing_match_count,
         )
 
     response = (
         supabase
         .table("plays")
-        .insert(record)
+        .insert(database_record)
         .execute()
     )
 
@@ -2316,11 +2609,13 @@ def upsert_play(
         return (
             response.data[0]["id"],
             "inserted",
+            False,
+            0,
         )
 
     inserted = get_existing_play(
         supabase,
-        record["dvsport_id"],
+        database_record["dvsport_id"],
     )
 
     if not inserted:
@@ -2331,6 +2626,8 @@ def upsert_play(
     return (
         inserted["id"],
         "inserted",
+        False,
+        0,
     )
 
 
@@ -2467,18 +2764,34 @@ def import_records(
     result = {
         "inserted": 0,
         "updated": 0,
+        "duplicates_prevented": 0,
+        "existing_duplicate_rows_detected": 0,
         "angles_inserted": 0,
         "angles_updated": 0,
         "angles_deleted": 0,
     }
 
     for record, angles in records:
-        play_id, action = upsert_play(
+        (
+            play_id,
+            action,
+            matched_secondary,
+            existing_match_count,
+        ) = upsert_play(
             supabase,
             record,
+            angles,
         )
 
         result[action] += 1
+
+        if matched_secondary:
+            result["duplicates_prevented"] += 1
+
+        if existing_match_count > 1:
+            result[
+                "existing_duplicate_rows_detected"
+            ] += existing_match_count - 1
 
         (
             angle_inserted,
@@ -2490,17 +2803,9 @@ def import_records(
             angles,
         )
 
-        result["angles_inserted"] += (
-            angle_inserted
-        )
-
-        result["angles_updated"] += (
-            angle_updated
-        )
-
-        result["angles_deleted"] += (
-            angle_deleted
-        )
+        result["angles_inserted"] += angle_inserted
+        result["angles_updated"] += angle_updated
+        result["angles_deleted"] += angle_deleted
 
     return result
 
@@ -2773,6 +3078,12 @@ def run_dvsport_sync(
         "plays_updated":
             0,
 
+        "duplicates_prevented":
+            0,
+
+        "existing_duplicate_rows_detected":
+            0,
+
         "angles_inserted":
             0,
 
@@ -2839,6 +3150,8 @@ def run_dvsport_sync(
                 summary["plays_inserted"],
             plays_updated=
                 summary["plays_updated"],
+            duplicates_prevented=
+                summary["duplicates_prevented"],
         )
 
         try:
@@ -2873,6 +3186,18 @@ def run_dvsport_sync(
                 "plays_updated"
             ] += imported[
                 "updated"
+            ]
+
+            summary[
+                "duplicates_prevented"
+            ] += imported[
+                "duplicates_prevented"
+            ]
+
+            summary[
+                "existing_duplicate_rows_detected"
+            ] += imported[
+                "existing_duplicate_rows_detected"
             ]
 
             for key in (
@@ -2942,6 +3267,8 @@ def run_dvsport_sync(
                 summary["plays_inserted"],
             plays_updated=
                 summary["plays_updated"],
+            duplicates_prevented=
+                summary["duplicates_prevented"],
         )
 
         try:
@@ -2983,6 +3310,18 @@ def run_dvsport_sync(
                 "plays_updated"
             ] += imported[
                 "updated"
+            ]
+
+            summary[
+                "duplicates_prevented"
+            ] += imported[
+                "duplicates_prevented"
+            ]
+
+            summary[
+                "existing_duplicate_rows_detected"
+            ] += imported[
+                "existing_duplicate_rows_detected"
             ]
 
             for angle_key in (
@@ -3069,6 +3408,7 @@ def run_dvsport_sync(
             faults_found=summary["faults_found"],
             plays_inserted=summary["plays_inserted"],
             plays_updated=summary["plays_updated"],
+            duplicates_prevented=summary["duplicates_prevented"],
         )
 
         try:
@@ -3084,6 +3424,10 @@ def run_dvsport_sync(
             imported = import_records(supabase, records)
             summary["plays_inserted"] += imported["inserted"]
             summary["plays_updated"] += imported["updated"]
+            summary["duplicates_prevented"] += imported["duplicates_prevented"]
+            summary["existing_duplicate_rows_detected"] += imported[
+                "existing_duplicate_rows_detected"
+            ]
             for angle_key in ("angles_inserted", "angles_updated", "angles_deleted"):
                 summary[angle_key] += imported[angle_key]
 

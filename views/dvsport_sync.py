@@ -193,7 +193,10 @@ st.info(
         "from each conference's FAULTS library. Every .DVPLAYLIST beneath "
         "the FAULTS folder is checked, with match/date recovered from "
         "playlist metadata or media URLs when needed. "
-        "Existing reviewer work, NCAA classifications, favorites, "
+        "Before writing, the sync matches against existing database "
+        "records by stable play identity and DV Sport media, so rerunning "
+        "the same dates does not create duplicate Challenges, POIs, or "
+        "FAULTS. Existing reviewer work, NCAA classifications, favorites, "
         "and notes are preserved."
     )
 )
@@ -289,6 +292,10 @@ if run_sync:
                 "plays_updated"
             )
 
+            duplicates_prevented = event.get(
+                "duplicates_prevented"
+            )
+
             current = event.get(
                 "current_item"
             )
@@ -330,6 +337,11 @@ if run_sync:
             if updated is not None:
                 parts.append(
                     f"Refreshed: {updated:,}"
+                )
+
+            if duplicates_prevented is not None:
+                parts.append(
+                    f"Duplicates Blocked: {duplicates_prevented:,}"
                 )
 
             if parts:
@@ -512,32 +524,54 @@ if run_sync:
                 delta_color="off",
             )
 
-        a1, a2, a3, a4 = st.columns(
-            4
+        a1, a2, a3, a4, a5 = st.columns(
+            5
         )
 
         with a1:
+            st.metric(
+                "Duplicates Blocked",
+                f"{result_count('duplicates_prevented'):,}",
+            )
+
+        with a2:
             st.metric(
                 "New Video Clips",
                 f"{result_count('angles_inserted'):,}",
             )
 
-        with a2:
+        with a3:
             st.metric(
                 "Updated Clips",
                 f"{result_count('angles_updated'):,}",
             )
 
-        with a3:
+        with a4:
             st.metric(
                 "Removed Stale Clips",
                 f"{result_count('angles_deleted'):,}",
             )
 
-        with a4:
+        with a5:
             st.metric(
                 "Elapsed",
                 f"{result_float('elapsed_seconds'):.1f}s",
+            )
+
+        existing_duplicate_rows = result_count(
+            "existing_duplicate_rows_detected"
+        )
+
+        if existing_duplicate_rows:
+            st.warning(
+                (
+                    f"This sync prevented new duplicate inserts and also "
+                    f"detected {existing_duplicate_rows:,} duplicate row"
+                    f"{'s' if existing_duplicate_rows != 1 else ''} already "
+                    "present from earlier syncs. Those older duplicate rows "
+                    "were left untouched so reviewer/tagging data is not "
+                    "deleted automatically."
+                )
             )
 
         errors = result.get("errors", []) or []
