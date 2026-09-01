@@ -860,6 +860,314 @@ def find_poi_playlist_groups(
 
 
 # ============================================================
+# FULL GAME PLAYLIST DISCOVERY
+# ============================================================
+
+def normalize_match_lookup_name(value):
+    """
+    Normalize match text for linking Review/POI/Fault records to FULL GAME
+    playlists without changing the stored display value.
+    """
+    text = normalize_identity_text(value)
+
+    if not text:
+        return ""
+
+    text = re.sub(r"\bVERSUS\b", " VS ", text)
+    text = re.sub(r"\bV\.?\b", " VS ", text)
+    text = text.replace("@", " VS ")
+    text = re.sub(r"[^A-Z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def parse_full_game_playlist_title(title):
+    """
+    Parse a FULL GAME title such as:
+
+      08.30.26 - UCONN VS HOFSTRA - 12-56-23
+      08.30.26 - PENN ST VS HIGH POINT - [RECOVERED]
+
+    Only the leading date and match name are needed for enrichment.
+    """
+    text = clean_text(title)
+    match_date = parse_leading_date(text)
+
+    match_name = re.sub(
+        r"^\d{2}[.\-]\d{2}[.\-]\d{2}\s*-\s*",
+        "",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
+    # Normal game titles end in the capture/import time.
+    match_name = re.sub(
+        r"\s*-\s*\d{2}-\d{2}-\d{2}\s*$",
+        "",
+        match_name,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
+    # Recovered game playlists can use this suffix instead of a time.
+    match_name = re.sub(
+        r"\s*-\s*\[RECOVERED\]\s*$",
+        "",
+        match_name,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
+    return {
+        "date": match_date,
+        "match": clean_text(match_name),
+    }
+
+
+def full_game_match_key(
+    conference,
+    match_date,
+    match_name,
+):
+    date_text = (
+        match_date.isoformat()
+        if isinstance(match_date, date)
+        else clean_text(match_date)
+    )
+
+    return (
+        clean_text(conference).upper(),
+        date_text,
+        normalize_match_lookup_name(match_name),
+    )
+
+
+def find_full_game_playlist_groups(
+    items,
+    start_date,
+    end_date,
+):
+    """
+    Discover FULL GAME .DVPLAYLIST files under:
+
+      HOME/VIDEOS/<YEAR>/<CONFERENCE>/GAMES/<TEAM>/...
+
+    These playlists are the authoritative media source when a specialized
+    Review, POI, or FAULT cutup contains incomplete/missing camera clips.
+    """
+    groups = {}
+
+    for item in items:
+        item_id = clean_text(item.get("Id"))
+        url = clean_text(item.get("Url"))
+        title = clean_text(item.get("Title"))
+        conference = conference_from_id(item_id)
+
+        if conference is None:
+            continue
+
+        upper_id = item_id.upper()
+
+        if f"/VIDEOS/{YEAR}/" not in upper_id:
+            continue
+
+        if "/GAMES/" not in upper_id:
+            continue
+
+        if item.get("Type") != 0:
+            continue
+
+        if not url.upper().endswith(".DVPLAYLIST"):
+            continue
+
+        groups_list = [
+            normalize_identity_text(value)
+            for value in (item.get("Groups") or [])
+        ]
+
+        # The library explicitly tags these with FULL GAME. Keep the path
+        # fallback for older records that may omit Groups.
+        if (
+            "FULL GAME" not in groups_list
+            and "/GAMES/" not in upper_id
+        ):
+            continue
+
+        parsed = parse_full_game_playlist_title(title)
+        match_date = parsed.get("date")
+
+        if match_date is None:
+            continue
+
+        if not (start_date <= match_date <= end_date):
+            continue
+
+        match_name = clean_text(parsed.get("match"))
+
+        if not match_name:
+            continue
+
+        copy = dict(item)
+        copy["_Conference"] = conference
+        copy["_SourceType"] = "FullGame"
+        copy["_MatchDate"] = match_date
+        copy["_MatchName"] = match_name
+
+        key = full_game_match_key(
+            conference,
+            match_date,
+            match_name,
+        )
+
+        groups.setdefault(key, []).append(copy)
+
+    # Prefer the newest/fullest published playlist first. NumberOfPlays can
+    # contain gaps (e.g. PLAY 104 can exist even if count is 103), so it is
+    # only a ranking hint and never used as a play-number boundary.
+    for candidates in groups.values():
+        candidates.sort(
+            key=lambda item: (
+                to_int(item.get("LastModifiedTicks")) or 0,
+                to_int(item.get("NumberOfPlays")) or -1,
+            ),
+            reverse=True,
+        )
+
+    return groups
+
+
+def build_full_game_date_index(full_game_groups):
+    """Index FULL GAME candidates by conference/date for safe fuzzy fallback."""
+    index = {}
+
+    for key, candidates in full_game_groups.items():
+        conference, date_text, _match_name = key
+        bucket = index.setdefault(
+            (conference, date_text),
+            [],
+        )
+
+        seen = {clean_text(item.get("Url")) for item in bucket}
+        for item in candidates:
+            url = clean_text(item.get("Url"))
+            if url and url not in seen:
+                bucket.append(item)
+                seen.add(url)
+
+    return index
+
+
+def _team_name_tokens(value):
+    text = normalize_identity_text(value)
+    text = re.sub(r"\\bUNIVERSITY\\b", " ", text)
+    text = re.sub(r"\\bSTATE\\b", " ST ", text)
+    text = re.sub(r"\\bSAINT\\b", " ST ", text)
+    text = re.sub(r"[^A-Z0-9]+", " ", text)
+    return {
+        token
+        for token in text.split()
+        if token not in {"THE", "OF"}
+    }
+
+
+def _token_similarity(left, right):
+    left_tokens = _team_name_tokens(left)
+    right_tokens = _team_name_tokens(right)
+
+    if not left_tokens or not right_tokens:
+        return 0.0
+
+    return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
+
+
+def _match_name_similarity(left, right):
+    left_norm = normalize_match_lookup_name(left)
+    right_norm = normalize_match_lookup_name(right)
+
+    if left_norm == right_norm and left_norm:
+        return 1.0
+
+    left_parts = re.split(r"\\s+VS\\s+", left_norm, maxsplit=1)
+    right_parts = re.split(r"\\s+VS\\s+", right_norm, maxsplit=1)
+
+    if len(left_parts) == 2 and len(right_parts) == 2:
+        direct = (
+            _token_similarity(left_parts[0], right_parts[0])
+            + _token_similarity(left_parts[1], right_parts[1])
+        ) / 2
+        swapped = (
+            _token_similarity(left_parts[0], right_parts[1])
+            + _token_similarity(left_parts[1], right_parts[0])
+        ) / 2
+        return max(direct, swapped)
+
+    return _token_similarity(left_norm, right_norm)
+
+
+def resolve_full_game_candidates(
+    record,
+    full_game_groups,
+    full_game_date_index,
+):
+    """
+    Resolve the FULL GAME playlist for one record.
+
+    Exact conference/date/match matching is preferred.  A conservative
+    same-day team-name similarity fallback handles harmless naming variants
+    such as STATE vs ST without linking unrelated matches.
+    """
+    exact_key = _full_game_record_key(record)
+    exact = full_game_groups.get(exact_key, [])
+
+    if exact:
+        return exact, "exact"
+
+    conference = clean_text(record.get("conference")).upper()
+    date_text = clean_text(record.get("match_date"))
+    wanted_match = clean_text(record.get("match_name"))
+
+    candidates = full_game_date_index.get(
+        (conference, date_text),
+        [],
+    )
+
+    scored = []
+    for item in candidates:
+        candidate_match = (
+            clean_text(item.get("_MatchName"))
+            or parse_full_game_playlist_title(
+                item.get("Title")
+            ).get("match")
+        )
+        score = _match_name_similarity(
+            wanted_match,
+            candidate_match,
+        )
+        if score >= 0.80:
+            scored.append((score, item))
+
+    if not scored:
+        return [], "none"
+
+    scored.sort(
+        key=lambda pair: (
+            pair[0],
+            to_int(pair[1].get("LastModifiedTicks")) or 0,
+        ),
+        reverse=True,
+    )
+
+    top_score = scored[0][0]
+    selected = [
+        item
+        for score, item in scored
+        if abs(score - top_score) < 1e-9
+    ]
+
+    return selected, "fuzzy"
+
+
+# ============================================================
 # DV SPORT PLAY FIELDS
 # ============================================================
 
@@ -1497,6 +1805,190 @@ def extract_video_angles(
 
 
 # ============================================================
+# DV SPORT SOURCE METADATA
+# ============================================================
+
+def _json_safe(value):
+    """Convert DV Sport values to JSON-safe values for Supabase JSONB."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+
+    if isinstance(value, dict):
+        return {
+            clean_text(key): _json_safe(item)
+            for key, item in value.items()
+        }
+
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+
+    return clean_text(value)
+
+
+def playlist_source_metadata(library_item, source_kind):
+    """Keep the library identity used to obtain this play."""
+    return {
+        "source_kind": clean_text(source_kind),
+        "id": clean_text(library_item.get("Id")) or None,
+        "title": clean_text(library_item.get("Title")) or None,
+        "url": clean_text(library_item.get("Url")) or None,
+        "internal_id": library_item.get("InternalId"),
+        "groups": _json_safe(library_item.get("Groups") or []),
+        "number_of_plays": to_int(library_item.get("NumberOfPlays")),
+        "last_modified_utc": clean_text(library_item.get("LastModifiedUtc")) or None,
+        "last_modified_ticks": to_int(library_item.get("LastModifiedTicks")),
+    }
+
+
+def play_source_metadata(
+    root_data,
+    playlist,
+    play,
+    library_item,
+    source_kind,
+):
+    """
+    Preserve useful DV Sport metadata from the exact source play.
+
+    We intentionally keep the flattened fields, original Data/DataVerbose,
+    and clip timing/identity metadata.  This gives VolleyReview a durable
+    audit/debug record without storing the entire match playlist payload.
+    """
+    fields = fields_for_play(playlist, play)
+
+    clips = []
+    for clip in (play.get("Clips") or play.get("clips") or [])[:30]:
+        if not isinstance(clip, dict):
+            continue
+
+        clips.append({
+            "name": clean_text(
+                clip.get("Name")
+                or clip.get("name")
+                or clip.get("FileName")
+                or clip.get("filename")
+            ) or None,
+            "label": clean_text(
+                clip.get("Label")
+                or clip.get("label")
+            ) or None,
+            "display_name": clean_text(
+                clip.get("DisplayName")
+                or clip.get("displayName")
+            ) or None,
+            "clip_id": clean_text(
+                clip.get("ClipId")
+                or clip.get("clipId")
+                or clip.get("clipid")
+            ) or None,
+            "frame_rate": _json_safe(
+                clip.get("FrameRate")
+                if "FrameRate" in clip
+                else clip.get("frameRate")
+            ),
+            "frame_start": _json_safe(
+                clip.get("FrameStart")
+                if "FrameStart" in clip
+                else clip.get("frameStart")
+            ),
+            "frame_end": _json_safe(
+                clip.get("FrameEnd")
+                if "FrameEnd" in clip
+                else clip.get("frameEnd")
+            ),
+            "seconds_start": _json_safe(
+                clip.get("SecondsStart")
+                if "SecondsStart" in clip
+                else clip.get("secondsStart")
+            ),
+            "seconds_end": _json_safe(
+                clip.get("SecondsEnd")
+                if "SecondsEnd" in clip
+                else clip.get("secondsEnd")
+            ),
+        })
+
+    return {
+        "playlist": playlist_source_metadata(
+            library_item,
+            source_kind,
+        ),
+        "play_number": normalized_play_number(
+            source_play_number(fields, play)
+        ) or None,
+        "play_id": clean_text(
+            play.get("PlayId")
+            or play.get("playId")
+        ) or None,
+        "internal_play_id": clean_text(
+            play.get("InternalPlayId")
+            or play.get("internalPlayId")
+        ) or None,
+        "slide_count": to_int(
+            play.get("SlideCount")
+            or play.get("slideCount")
+        ) or 0,
+        "clip_count": len(clips),
+        "fields": _json_safe(fields),
+        "data": _json_safe(
+            play.get("Data")
+            or play.get("data")
+            or []
+        ),
+        "data_verbose": _json_safe(
+            play.get("DataVerbose")
+            or play.get("dataVerbose")
+            or []
+        ),
+        "clips": clips,
+    }
+
+
+def attach_specialized_source_metadata(
+    record,
+    root_data,
+    playlist,
+    play,
+    library_item,
+):
+    """Attach common source fields to every Challenge, POI, and Fault."""
+    play_number = normalized_play_number(
+        record.get("_sync_play_number")
+    )
+
+    record["dvsport_play_number"] = (
+        to_int(play_number)
+        if play_number
+        else None
+    )
+    record["dvsport_source_url"] = (
+        clean_text(library_item.get("Url"))
+        or None
+    )
+    record["dvsport_full_game_url"] = None
+    record["dvsport_metadata"] = {
+        "specialized": play_source_metadata(
+            root_data,
+            playlist,
+            play,
+            library_item,
+            record.get("play_type") or "Specialized",
+        ),
+        "full_game": None,
+        "full_game_lookup": {
+            "status": "pending",
+            "match_method": None,
+            "candidates_checked": 0,
+        },
+    }
+
+    return record
+
+
+# ============================================================
 # STABLE IDS
 # ============================================================
 
@@ -1840,6 +2332,14 @@ def extract_challenges_from_playlist(
                 ),
         }
 
+        attach_specialized_source_metadata(
+            record,
+            root_data,
+            playlist,
+            play,
+            library_item,
+        )
+
         record["video_urls"] = extract_video_angles(
             root_data,
             playlist,
@@ -1980,6 +2480,14 @@ def extract_pois_from_playlist(
             "challenge_length_seconds":
                 None,
         }
+
+        attach_specialized_source_metadata(
+            record,
+            root_data,
+            playlist,
+            play,
+            library_item,
+        )
 
         record["video_urls"] = extract_video_angles(
             root_data,
@@ -2599,6 +3107,14 @@ def extract_faults_from_playlist(
                 None,
         }
 
+        attach_specialized_source_metadata(
+            record,
+            root_data,
+            playlist,
+            play,
+            library_item,
+        )
+
         record["video_urls"] = extract_video_angles(
             root_data,
             playlist,
@@ -2687,7 +3203,8 @@ def get_existing_play(
         .table("plays")
         .select(
             "id,dvsport_id,conference,match_date,match_name,play_type,"
-            "set_number,score,dvsport_play_category,challenge_type,video_urls"
+            "set_number,score,dvsport_play_category,challenge_type,video_urls,"
+            "dvsport_play_number,dvsport_source_url,dvsport_full_game_url,dvsport_metadata"
         )
         .eq("dvsport_id", dvsport_id)
         .limit(1)
@@ -2742,7 +3259,8 @@ def existing_candidates_for_record(
         .table("plays")
         .select(
             "id,dvsport_id,conference,match_date,match_name,play_type,"
-            "set_number,score,dvsport_play_category,challenge_type,video_urls"
+            "set_number,score,dvsport_play_category,challenge_type,video_urls,"
+            "dvsport_play_number,dvsport_source_url,dvsport_full_game_url,dvsport_metadata"
         )
         .eq("conference", conference)
         .eq("match_date", match_date)
@@ -2976,6 +3494,287 @@ def merge_video_urls(
 
     return result[:30]
 
+
+def _full_game_record_key(record):
+    match_date = clean_text(record.get("match_date"))
+
+    return full_game_match_key(
+        record.get("conference"),
+        match_date,
+        record.get("match_name"),
+    )
+
+
+def _full_game_play_index(
+    session,
+    item,
+    root_cache,
+    play_index_cache,
+):
+    """
+    Load one FULL GAME playlist once and index every play by PLAY number.
+
+    This is the standardized source used for every Challenge, POI, and Fault.
+    """
+    url = clean_text(item.get("Url"))
+
+    if not url:
+        return {}
+
+    if url in play_index_cache:
+        return play_index_cache[url]
+
+    if url not in root_cache:
+        root_cache[url] = get_playlist_data(
+            session,
+            url,
+        )
+
+    root_data = root_cache[url]
+    playlist = (
+        root_data.get("Playlist")
+        or root_data.get("playlist")
+        or {}
+    )
+    plays = (
+        playlist.get("Plays")
+        or playlist.get("plays")
+        or []
+    )
+
+    index = {}
+
+    for play in plays:
+        fields = fields_for_play(
+            playlist,
+            play,
+        )
+        play_number = normalized_play_number(
+            source_play_number(
+                fields,
+                play,
+            )
+        )
+
+        if not play_number:
+            continue
+
+        angles = extract_video_angles(
+            root_data,
+            playlist,
+            play,
+        )
+        metadata = play_source_metadata(
+            root_data,
+            playlist,
+            play,
+            item,
+            "FullGame",
+        )
+
+        current = index.get(play_number)
+        if current is None:
+            index[play_number] = {
+                "angles": angles,
+                "metadata": metadata,
+            }
+        else:
+            current["angles"] = merge_video_urls(
+                current.get("angles"),
+                angles,
+            )
+            if (
+                metadata.get("clip_count", 0)
+                > current.get("metadata", {}).get("clip_count", 0)
+            ):
+                current["metadata"] = metadata
+
+    play_index_cache[url] = index
+    return index
+
+
+def enrich_records_with_full_game_data(
+    session,
+    records,
+    full_game_groups,
+    full_game_date_index,
+    root_cache,
+    play_index_cache,
+    metrics=None,
+):
+    """
+    ALWAYS consult the corresponding FULL GAME playlist for every record.
+
+    Challenge/POI/Fault playlists remain the authoritative event/tag source,
+    while FULL GAME is the standardized source for complete play media and
+    additional DV Sport play metadata.  Specialized media is retained as an
+    additive source, but a FULL GAME match is attempted for every single play.
+    """
+    metrics = metrics if metrics is not None else {}
+
+    for record in records or []:
+        metrics["full_game_plays_checked"] = (
+            metrics.get("full_game_plays_checked", 0) + 1
+        )
+
+        metadata = record.get("dvsport_metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            record["dvsport_metadata"] = metadata
+
+        lookup = metadata.get("full_game_lookup")
+        if not isinstance(lookup, dict):
+            lookup = {}
+            metadata["full_game_lookup"] = lookup
+
+        play_number = normalized_play_number(
+            record.get("_sync_play_number")
+            or record.get("dvsport_play_number")
+        )
+
+        if not play_number:
+            lookup.update({
+                "status": "play_number_missing",
+                "match_method": None,
+                "candidates_checked": 0,
+            })
+            metrics["full_game_play_number_missing"] = (
+                metrics.get("full_game_play_number_missing", 0) + 1
+            )
+            continue
+
+        candidates, match_method = resolve_full_game_candidates(
+            record,
+            full_game_groups,
+            full_game_date_index,
+        )
+
+        lookup["match_method"] = match_method
+        lookup["candidates_checked"] = len(candidates)
+
+        if not candidates:
+            lookup["status"] = "full_game_playlist_missing"
+            metrics["full_game_playlist_missing"] = (
+                metrics.get("full_game_playlist_missing", 0) + 1
+            )
+            continue
+
+        matched_entries = []
+        candidate_errors = []
+
+        for item in candidates:
+            try:
+                index = _full_game_play_index(
+                    session,
+                    item,
+                    root_cache,
+                    play_index_cache,
+                )
+            except Exception as exc:
+                candidate_errors.append({
+                    "title": clean_text(item.get("Title")),
+                    "error": str(exc),
+                })
+                continue
+
+            entry = index.get(play_number)
+            if entry:
+                matched_entries.append((item, entry))
+
+        if not matched_entries:
+            lookup["status"] = "play_not_found_in_full_game"
+            if candidate_errors:
+                lookup["candidate_errors"] = candidate_errors[:5]
+            metrics["full_game_play_missing"] = (
+                metrics.get("full_game_play_missing", 0) + 1
+            )
+            continue
+
+        full_game_angles = []
+        for _item, entry in matched_entries:
+            full_game_angles = merge_video_urls(
+                full_game_angles,
+                entry.get("angles"),
+            )
+
+        primary_item, primary_entry = matched_entries[0]
+        primary_metadata = primary_entry.get("metadata") or {}
+
+        record["dvsport_full_game_url"] = (
+            clean_text(primary_item.get("Url"))
+            or None
+        )
+        metadata["full_game"] = primary_metadata
+        lookup.update({
+            "status": (
+                "matched"
+                if full_game_angles
+                else "matched_no_video"
+            ),
+            "play_number": play_number,
+            "full_game_sources_matched": len(matched_entries),
+            "full_game_angle_count": len(full_game_angles),
+            "full_game_titles": [
+                clean_text(item.get("Title"))
+                for item, _entry in matched_entries
+            ],
+        })
+
+        # Full-game media is always consulted and overlaid onto specialized
+        # media.  This preserves any specialized-only replay while ensuring
+        # the complete game-camera set is present whenever DV Sport provides it.
+        record["video_urls"] = merge_video_urls(
+            record.get("video_urls"),
+            full_game_angles,
+        )
+
+        metrics["full_game_plays_matched"] = (
+            metrics.get("full_game_plays_matched", 0) + 1
+        )
+        metrics["full_game_angles_found"] = (
+            metrics.get("full_game_angles_found", 0)
+            + len(full_game_angles)
+        )
+
+        if not full_game_angles:
+            metrics["full_game_zero_angle_plays"] = (
+                metrics.get("full_game_zero_angle_plays", 0) + 1
+            )
+
+    return records
+
+
+def merge_dvsport_metadata(existing_value, incoming_value):
+    """Preserve a previously matched FULL GAME payload if a later sync is sparse."""
+    existing = existing_value if isinstance(existing_value, dict) else {}
+    incoming = incoming_value if isinstance(incoming_value, dict) else {}
+
+    result = dict(existing)
+    result.update(incoming)
+
+    incoming_full = incoming.get("full_game")
+    if not incoming_full and existing.get("full_game"):
+        result["full_game"] = existing.get("full_game")
+
+    incoming_lookup = incoming.get("full_game_lookup")
+    if isinstance(incoming_lookup, dict):
+        status = clean_text(incoming_lookup.get("status"))
+        if (
+            status in {
+                "full_game_playlist_missing",
+                "play_not_found_in_full_game",
+                "play_number_missing",
+            }
+            and isinstance(existing.get("full_game_lookup"), dict)
+            and clean_text(
+                existing["full_game_lookup"].get("status")
+            ).startswith("matched")
+        ):
+            result["full_game_lookup"] = existing["full_game_lookup"]
+
+    return result
+
+
 def upsert_play(
     supabase,
     record,
@@ -3020,6 +3819,22 @@ def upsert_play(
             existing.get("video_urls"),
             database_record.get("video_urls"),
         )
+        database_record["dvsport_metadata"] = merge_dvsport_metadata(
+            existing.get("dvsport_metadata"),
+            database_record.get("dvsport_metadata"),
+        )
+        if not database_record.get("dvsport_full_game_url"):
+            database_record["dvsport_full_game_url"] = (
+                existing.get("dvsport_full_game_url")
+            )
+        if not database_record.get("dvsport_source_url"):
+            database_record["dvsport_source_url"] = (
+                existing.get("dvsport_source_url")
+            )
+        if not database_record.get("dvsport_play_number"):
+            database_record["dvsport_play_number"] = (
+                existing.get("dvsport_play_number")
+            )
         # If this was matched through media/play-number identity, writing
         # the incoming canonical dvsport_id migrates the legacy row in
         # place.  The exact-ID lookup above already proved the canonical
@@ -3325,6 +4140,24 @@ def run_dvsport_sync(
         )
     )
 
+    full_game_groups = (
+        find_full_game_playlist_groups(
+            library_items,
+            start_date,
+            end_date,
+        )
+    )
+
+    full_game_date_index = build_full_game_date_index(
+        full_game_groups
+    )
+
+    # Cache FULL GAME payloads and a complete PLAY-number index. Each full
+    # match playlist is downloaded at most once, even when many review events
+    # from that match need enrichment.
+    full_game_root_cache = {}
+    full_game_play_index_cache = {}
+
     total_work = (
         len(challenge_playlists)
         + len(poi_groups)
@@ -3365,6 +4198,30 @@ def run_dvsport_sync(
 
         "fault_match_groups":
             len(fault_groups),
+
+        "full_game_match_groups":
+            len(full_game_groups),
+
+        "full_game_plays_checked":
+            0,
+
+        "full_game_plays_matched":
+            0,
+
+        "full_game_playlist_missing":
+            0,
+
+        "full_game_play_missing":
+            0,
+
+        "full_game_play_number_missing":
+            0,
+
+        "full_game_zero_angle_plays":
+            0,
+
+        "full_game_angles_found":
+            0,
 
         "challenges_found":
             0,
@@ -3467,6 +4324,16 @@ def run_dvsport_sync(
             summary[
                 "challenges_found"
             ] += len(records)
+
+            records = enrich_records_with_full_game_data(
+                session,
+                records,
+                full_game_groups,
+                full_game_date_index,
+                full_game_root_cache,
+                full_game_play_index_cache,
+                metrics=summary,
+            )
 
             imported = import_records(
                 supabase,
@@ -3589,6 +4456,16 @@ def run_dvsport_sync(
                 "pois_found"
             ] += len(records)
 
+            records = enrich_records_with_full_game_data(
+                session,
+                records,
+                full_game_groups,
+                full_game_date_index,
+                full_game_root_cache,
+                full_game_play_index_cache,
+                metrics=summary,
+            )
+
             imported = import_records(
                 supabase,
                 records,
@@ -3708,6 +4585,17 @@ def run_dvsport_sync(
                 )
             )
             summary["faults_found"] += len(records)
+
+            records = enrich_records_with_full_game_data(
+                session,
+                records,
+                full_game_groups,
+                full_game_date_index,
+                full_game_root_cache,
+                full_game_play_index_cache,
+                metrics=summary,
+            )
+
             imported = import_records(supabase, records)
             summary["plays_inserted"] += imported["inserted"]
             summary["plays_updated"] += imported["updated"]
@@ -3754,4 +4642,3 @@ def run_dvsport_sync(
     )
 
     return summary
-# yay

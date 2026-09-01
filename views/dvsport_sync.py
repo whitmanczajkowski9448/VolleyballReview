@@ -196,10 +196,13 @@ st.info(
         "Before writing, the sync matches against existing database "
         "records by stable play identity and DV Sport media, so rerunning "
         "the same dates does not create duplicate Challenges, POIs, or "
-        "FAULTS. Each play's named DV Sport video URLs are stored directly "
-        "on that play row in plays.video_urls; no separate video-angle table "
-        "is used. Existing reviewer work, NCAA classifications, favorites, "
-        "and notes are preserved."
+        "FAULTS. Every imported play is then matched back to its FULL GAME "
+        "playlist by conference, date, match, and PLAY number. FULL GAME is "
+        "always consulted for the complete camera set and additional DV Sport "
+        "play metadata; specialized Challenge/POI/FAULT cutups remain the "
+        "event-tag source. Named video URLs are stored directly on the play "
+        "row in plays.video_urls. Existing reviewer work, NCAA classifications, "
+        "favorites, and notes are preserved."
     )
 )
 
@@ -548,6 +551,89 @@ if run_sync:
             st.metric(
                 "Elapsed",
                 f"{result_float('elapsed_seconds'):.1f}s",
+            )
+
+        st.write("")
+        render_section_label(
+            "Full Game Coverage"
+        )
+
+        g1, g2, g3, g4 = st.columns(
+            4
+        )
+
+        with g1:
+            st.metric(
+                "Full Game Match Groups",
+                f"{result_count('full_game_match_groups'):,}",
+            )
+
+        with g2:
+            st.metric(
+                "Plays Checked",
+                f"{result_count('full_game_plays_checked'):,}",
+                "Every imported play",
+                delta_color="off",
+            )
+
+        with g3:
+            st.metric(
+                "Full Game Plays Matched",
+                f"{result_count('full_game_plays_matched'):,}",
+            )
+
+        with g4:
+            st.metric(
+                "Full Game Angles Found",
+                f"{result_count('full_game_angles_found'):,}",
+            )
+
+        g5, g6, g7, g8 = st.columns(
+            4
+        )
+
+        with g5:
+            st.metric(
+                "Playlist Missing",
+                f"{result_count('full_game_playlist_missing'):,}",
+            )
+
+        with g6:
+            st.metric(
+                "PLAY # Missing",
+                f"{result_count('full_game_play_number_missing'):,}",
+            )
+
+        with g7:
+            st.metric(
+                "PLAY Not In Full Game",
+                f"{result_count('full_game_play_missing'):,}",
+            )
+
+        with g8:
+            st.metric(
+                "Matched With 0 Angles",
+                f"{result_count('full_game_zero_angle_plays'):,}",
+            )
+
+        unresolved_full_game = (
+            result_count("full_game_playlist_missing")
+            + result_count("full_game_play_number_missing")
+            + result_count("full_game_play_missing")
+            + result_count("full_game_zero_angle_plays")
+        )
+
+        if unresolved_full_game:
+            st.warning(
+                f"{unresolved_full_game:,} play(s) did not receive complete "
+                "FULL GAME media enrichment. The play records were still "
+                "imported, and dvsport_metadata.full_game_lookup records the "
+                "reason for each unresolved play."
+            )
+        else:
+            st.success(
+                "Every imported play with a usable PLAY number matched its "
+                "FULL GAME source with no unresolved media lookups."
             )
 
         existing_duplicate_rows = result_count(
