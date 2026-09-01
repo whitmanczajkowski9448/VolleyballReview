@@ -6,6 +6,7 @@ import streamlit as st
 from datetime import date, datetime, timedelta
 
 from services.database import get_supabase
+from services.dvsport_media import fresh_video_url
 from services.auth import require_admin, is_admin
 from services.ui import (
     render_page_header,
@@ -501,11 +502,11 @@ def video_sort_key(angle):
 
 def video_angles_from_play(play):
     """
-    Return the named video URLs stored directly on this plays row.
+    Return this play's named video angles using fresh FilmRoom SAS URLs.
 
-    The current DV Sport sync writes media to plays.video_urls as JSONB.
-    Accept list JSON, string JSON, and legacy dict-shaped JSON so the
-    Viewer/Editor remain tolerant of older records.
+    plays.video_urls keeps the stable DV Sport media reference. Each DV Sport
+    blob URL is sent to FilmRoom's /VideoPlayer/GetSasUrl endpoint before use,
+    so raw URLs become playable and expired SAS URLs are refreshed.
     """
     raw = play.get("video_urls")
 
@@ -517,10 +518,7 @@ def video_angles_from_play(play):
 
     if isinstance(raw, dict):
         raw = [
-            {
-                "angle_name": name,
-                "video_url": url,
-            }
+            {"angle_name": name, "video_url": url}
             for name, url in raw.items()
         ]
 
@@ -533,34 +531,41 @@ def video_angles_from_play(play):
         if not isinstance(item, dict):
             continue
 
-        url = clean_text(
+        source_url = clean_text(
             item.get("video_url")
             or item.get("url")
+            or item.get("source_url")
         )
 
-        if not has_usable_video_url(url):
+        if not has_usable_video_url(source_url):
             continue
 
         name = (
-            clean_text(
-                item.get("angle_name")
-                or item.get("name")
-            )
+            clean_text(item.get("angle_name") or item.get("name"))
             or f"Video {index}"
         )
+
+        sas_error = ""
+        try:
+            playable_url = fresh_video_url(source_url)
+        except Exception as exc:
+            playable_url = source_url
+            sas_error = str(exc)
 
         angles.append(
             {
                 "id": index,
                 "angle_name": name,
-                "video_url": url,
+                "video_url": playable_url,
+                "source_video_url": source_url,
+                "media_name": clean_text(
+                    item.get("media_name") or item.get("filename")
+                ),
+                "sas_error": sas_error,
             }
         )
 
-    angles.sort(
-        key=video_sort_key
-    )
-
+    angles.sort(key=video_sort_key)
     return angles
 
 
@@ -568,9 +573,6 @@ def render_video_player(
     angle,
     primary=False,
 ):
-    """
-    Render absolutely nothing for an angle with no real URL.
-    """
     url = clean_text(
         angle.get("video_url")
     )
@@ -586,12 +588,23 @@ def render_video_player(
     )
 
     if primary:
-        st.subheader(
-            angle_name
-        )
+        st.subheader(angle_name)
     else:
         st.markdown(
             f"**{angle_name}**"
+        )
+
+    sas_error = clean_text(
+        angle.get("sas_error")
+    )
+
+    if sas_error:
+        st.warning(
+            (
+                "Could not refresh this DV Sport video's signed URL. "
+                f"{sas_error}"
+            ),
+            icon="⚠️",
         )
 
     st.video(url)
