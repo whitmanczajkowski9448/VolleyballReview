@@ -1,4 +1,5 @@
 import json
+
 import pandas as pd
 import requests
 import streamlit as st
@@ -500,12 +501,11 @@ def video_sort_key(angle):
 
 def video_angles_from_play(play):
     """
-    Return only the named video URLs stored on this plays row.
+    Return the named video URLs stored directly on this plays row.
 
-    Supabase returns JSONB as a Python list, but string JSON is accepted
-    too so the page remains robust during deployment/migration. Runtime
-    ids are added only so the existing PGM/Replay layout can distinguish
-    entries; they are not database ids.
+    The current DV Sport sync writes media to plays.video_urls as JSONB.
+    Accept list JSON, string JSON, and legacy dict-shaped JSON so the
+    Viewer/Editor remain tolerant of older records.
     """
     raw = play.get("video_urls")
 
@@ -557,7 +557,10 @@ def video_angles_from_play(play):
             }
         )
 
-    angles.sort(key=video_sort_key)
+    angles.sort(
+        key=video_sort_key
+    )
+
     return angles
 
 
