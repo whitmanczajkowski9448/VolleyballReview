@@ -999,18 +999,68 @@ def angle_priority(label):
     return 10
 
 
+def _media_value_to_url(value):
+    """Return a URL from the different DV Sport media-map shapes."""
+    if isinstance(value, str):
+        return clean_text(value)
+
+    if isinstance(value, dict):
+        return clean_text(
+            value.get("url")
+            or value.get("Url")
+            or value.get("sasUrl")
+            or value.get("SasUrl")
+            or value.get("mediaUrl")
+            or value.get("MediaUrl")
+            or value.get("videoUrl")
+            or value.get("VideoUrl")
+            or value.get("src")
+            or value.get("Src")
+        )
+
+    return ""
+
+
+def _normalized_media_key(value):
+    """Normalize a DV Sport clip/map key for tolerant matching."""
+    text = unquote(clean_text(value)).replace("\\", "/")
+    text = re.sub(r"/+", "/", text).strip().lower()
+    return text
+
+
 def map_lookup(mapping, key):
     """
-    DV Sport media maps have appeared as either dictionaries
-    or lists of objects. Support both.
+    Resolve one clip name against DV Sport's media maps.
+
+    DV Sport has returned these maps as dictionaries, lists of objects,
+    and with small differences in case/URL encoding/path separators.
+    The previous exact-key-only lookup could resolve PGM while silently
+    missing the other camera files.
     """
     if not mapping:
         return ""
 
+    wanted = _normalized_media_key(key)
+    wanted_base = wanted.rsplit("/", 1)[-1]
+
     if isinstance(mapping, dict):
-        return clean_text(
-            mapping.get(key)
-        )
+        # Fast exact lookup first.
+        if key in mapping:
+            url = _media_value_to_url(mapping.get(key))
+            if url:
+                return url
+
+        # Then tolerate case, URL encoding, slash, and basename differences.
+        for map_key, value in mapping.items():
+            candidate = _normalized_media_key(map_key)
+            candidate_base = candidate.rsplit("/", 1)[-1]
+            if (
+                candidate == wanted
+                or candidate_base == wanted_base
+            ):
+                url = _media_value_to_url(value)
+                if url:
+                    return url
 
     if isinstance(mapping, list):
         for item in mapping:
@@ -1025,21 +1075,42 @@ def map_lookup(mapping, key):
                 or item.get("filename")
                 or item.get("FileName")
                 or item.get("clipName")
+                or item.get("ClipName")
             )
 
-            if possible_key != key:
+            candidate = _normalized_media_key(possible_key)
+            candidate_base = candidate.rsplit("/", 1)[-1]
+
+            if not (
+                candidate == wanted
+                or candidate_base == wanted_base
+            ):
                 continue
 
-            return clean_text(
-                item.get("url")
-                or item.get("Url")
-                or item.get("sasUrl")
-                or item.get("SasUrl")
-                or item.get("mediaUrl")
-                or item.get("MediaUrl")
-            )
+            url = _media_value_to_url(item)
+            if url:
+                return url
 
     return ""
+
+
+def _clip_direct_url(clip):
+    """Use a URL embedded directly on a clip when DV Sport supplies one."""
+    if not isinstance(clip, dict):
+        return ""
+
+    return clean_text(
+        clip.get("VideoUrl")
+        or clip.get("videoUrl")
+        or clip.get("MediaUrl")
+        or clip.get("mediaUrl")
+        or clip.get("SasUrl")
+        or clip.get("sasUrl")
+        or clip.get("Url")
+        or clip.get("url")
+        or clip.get("Src")
+        or clip.get("src")
+    )
 
 
 def extract_video_angles(
@@ -1048,8 +1119,13 @@ def extract_video_angles(
     play,
 ):
     """
-    Videos are always specific to THIS play.
-    There are no universal camera placeholders.
+    Extract EVERY real DV Sport camera clip attached to this play.
+
+    Important behavior:
+      * do not collapse different clip entries merely because a URL repeats;
+      * preserve repeated labels by numbering them;
+      * accept direct clip URLs as well as SasMap/MediaMap URLs;
+      * de-duplicate only an exact (label, normalized media identity) repeat.
     """
     sas_map = (
         root_data.get("SasMap")
@@ -1063,71 +1139,101 @@ def extract_video_angles(
         or {}
     )
 
-    by_url = {}
-
     clips = (
         play.get("Clips")
         or play.get("clips")
         or []
     )
 
-    for clip in clips:
+    raw_angles = []
+    seen_exact = set()
+
+    for clip_index, clip in enumerate(clips, start=1):
+        if not isinstance(clip, dict):
+            continue
+
         clip_name = clean_text(
             clip.get("Name")
             or clip.get("name")
+            or clip.get("FileName")
+            or clip.get("filename")
+            or clip.get("ClipName")
+            or clip.get("clipName")
         )
 
         raw_label = clean_text(
             clip.get("Label")
             or clip.get("label")
+            or clip.get("Angle")
+            or clip.get("angle")
+            or clip.get("Camera")
+            or clip.get("camera")
+            or clip.get("CameraName")
+            or clip.get("cameraName")
         )
 
-        if not clip_name:
-            continue
+        url = _clip_direct_url(clip)
 
-        url = (
-            map_lookup(
-                sas_map,
-                clip_name,
+        if not url and clip_name:
+            url = (
+                map_lookup(sas_map, clip_name)
+                or map_lookup(media_map, clip_name)
             )
-            or map_lookup(
-                media_map,
-                clip_name,
-            )
-        )
 
         if not url:
             continue
 
         label = normalize_angle_label(
             raw_label
+            or clip_name
+            or f"Video {clip_index}"
         )
 
-        candidate = {
-            "angle_name": label,
-            "video_url": url,
-        }
+        # Query strings on signed URLs can change without changing the clip.
+        media_id = normalized_media_identity(url) or clean_text(url).lower()
+        exact_key = (label.upper(), media_id)
 
-        current = by_url.get(url)
+        if exact_key in seen_exact:
+            continue
 
-        if (
-            current is None
-            or angle_priority(label)
-            < angle_priority(
-                current["angle_name"]
-            )
-        ):
-            by_url[url] = candidate
+        seen_exact.add(exact_key)
+        raw_angles.append(
+            {
+                "angle_name": label,
+                "video_url": url,
+            }
+        )
 
-    angles = list(
-        by_url.values()
-    )
+    # DV Sport may use the same generic Label for several cameras.  Keep all
+    # of them by giving each stored row a stable, unique display name.
+    label_totals = {}
+    for angle in raw_angles:
+        base = angle["angle_name"]
+        label_totals[base] = label_totals.get(base, 0) + 1
+
+    label_seen = {}
+    angles = []
+
+    for angle in raw_angles:
+        base = angle["angle_name"]
+        label_seen[base] = label_seen.get(base, 0) + 1
+        occurrence = label_seen[base]
+
+        if label_totals[base] == 1 or occurrence == 1:
+            display_name = base
+        else:
+            display_name = f"{base} {occurrence}"
+
+        angles.append(
+            {
+                "angle_name": display_name,
+                "video_url": angle["video_url"],
+            }
+        )
 
     angles.sort(
         key=lambda angle: (
-            angle_priority(
-                angle["angle_name"]
-            ),
+            angle_priority(angle["angle_name"]),
             angle["angle_name"].upper(),
         )
     )
@@ -2637,46 +2743,34 @@ def sync_video_angles(
     angles,
 ):
     """
-    Video rows are specific to one play.
+    Synchronize all camera angles for one play.
 
-    Identity:
-        play_id + video_url
-
-    This matches the database unique constraint.
+    Angle name is the stable row identity.  This matters because DV Sport
+    signed URLs can change between syncs, while the camera/angle label stays
+    stable.  Repeated generic labels are numbered by extract_video_angles().
     """
     existing_response = (
         supabase
         .table("video_angles")
-        .select(
-            "id,angle_name,video_url"
-        )
-        .eq(
-            "play_id",
-            play_id,
-        )
+        .select("id,angle_name,video_url")
+        .eq("play_id", play_id)
         .execute()
     )
 
-    existing = (
-        existing_response.data
-        or []
-    )
+    existing = existing_response.data or []
 
-    existing_by_url = {
-        clean_text(
-            row.get("video_url")
-        ): row
+    existing_by_name = {
+        clean_text(row.get("angle_name")): row
         for row in existing
-        if clean_text(
-            row.get("video_url")
-        )
+        if clean_text(row.get("angle_name"))
     }
 
-    incoming_by_url = {
-        angle["video_url"]: angle
+    incoming_by_name = {
+        clean_text(angle.get("angle_name")): angle
         for angle in angles
-        if clean_text(
-            angle.get("video_url")
+        if (
+            clean_text(angle.get("angle_name"))
+            and clean_text(angle.get("video_url"))
         )
     }
 
@@ -2684,77 +2778,48 @@ def sync_video_angles(
     updated = 0
     deleted = 0
 
-    for url, angle in (
-        incoming_by_url.items()
-    ):
-        name = angle["angle_name"]
-        current = existing_by_url.get(
-            url
-        )
+    for name, angle in incoming_by_name.items():
+        url = clean_text(angle.get("video_url"))
+        current = existing_by_name.get(name)
 
         if current:
-            if clean_text(
-                current.get("angle_name")
-            ) != name:
+            if clean_text(current.get("video_url")) != url:
                 (
                     supabase
                     .table("video_angles")
-                    .update(
-                        {
-                            "angle_name":
-                                name
-                        }
-                    )
-                    .eq(
-                        "id",
-                        current["id"],
-                    )
+                    .update({"video_url": url})
+                    .eq("id", current["id"])
                     .execute()
                 )
-
                 updated += 1
-
         else:
             (
                 supabase
                 .table("video_angles")
                 .insert(
                     {
-                        "play_id":
-                            play_id,
-                        "angle_name":
-                            name,
-                        "video_url":
-                            url,
+                        "play_id": play_id,
+                        "angle_name": name,
+                        "video_url": url,
                     }
                 )
                 .execute()
             )
-
             inserted += 1
 
-    for url, current in (
-        existing_by_url.items()
-    ):
-        if url not in incoming_by_url:
+    # Remove angles that DV Sport no longer associates with this play.
+    for name, current in existing_by_name.items():
+        if name not in incoming_by_name:
             (
                 supabase
                 .table("video_angles")
                 .delete()
-                .eq(
-                    "id",
-                    current["id"],
-                )
+                .eq("id", current["id"])
                 .execute()
             )
-
             deleted += 1
 
-    return (
-        inserted,
-        updated,
-        deleted,
-    )
+    return inserted, updated, deleted
 
 
 def import_records(
