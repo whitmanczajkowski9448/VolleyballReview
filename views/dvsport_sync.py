@@ -196,7 +196,9 @@ st.info(
         "Before writing, the sync matches against existing database "
         "records by stable play identity and DV Sport media, so rerunning "
         "the same dates does not create duplicate Challenges, POIs, or "
-        "FAULTS. Existing reviewer work, NCAA classifications, favorites, "
+        "FAULTS. Each play's named DV Sport video URLs are stored directly "
+        "on that play row in plays.video_urls; no separate video-angle table "
+        "is used. Existing reviewer work, NCAA classifications, favorites, "
         "and notes are preserved."
     )
 )
@@ -524,8 +526,8 @@ if run_sync:
                 delta_color="off",
             )
 
-        a1, a2, a3, a4, a5 = st.columns(
-            5
+        a1, a2, a3 = st.columns(
+            3
         )
 
         with a1:
@@ -536,23 +538,13 @@ if run_sync:
 
         with a2:
             st.metric(
-                "New Video Clips",
-                f"{result_count('angles_inserted'):,}",
+                "Video Clips Attached",
+                f"{result_count('video_clips_attached'):,}",
+                "Stored directly on play rows",
+                delta_color="off",
             )
 
         with a3:
-            st.metric(
-                "Updated Clips",
-                f"{result_count('angles_updated'):,}",
-            )
-
-        with a4:
-            st.metric(
-                "Removed Stale Clips",
-                f"{result_count('angles_deleted'):,}",
-            )
-
-        with a5:
             st.metric(
                 "Elapsed",
                 f"{result_float('elapsed_seconds'):.1f}s",

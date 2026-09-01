@@ -563,7 +563,7 @@ def extract_video_angles(root_data, playlist, play):
             }
         )
 
-    return angles
+    return angles[:30]
 
 
 def extract_challenges_from_playlist(root_data, library_item):
@@ -626,8 +626,12 @@ def extract_challenges_from_playlist(root_data, library_item):
             "challenge_length_seconds": review_time_seconds,
         }
 
-        angles = extract_video_angles(root_data, playlist, play)
-        records.append((record, angles))
+        record["video_urls"] = extract_video_angles(
+            root_data,
+            playlist,
+            play,
+        )
+        records.append(record)
 
     return records
 
@@ -686,57 +690,6 @@ def upsert_play(supabase, record):
     return play_id, action
 
 
-def sync_video_angles(supabase, play_id, angles):
-    existing_response = (
-        supabase
-        .table("video_angles")
-        .select("id,angle_name,video_url")
-        .eq("play_id", play_id)
-        .execute()
-    )
-
-    existing = existing_response.data or []
-    existing_by_name = {
-        clean_text(row.get("angle_name")): row
-        for row in existing
-        if clean_text(row.get("angle_name"))
-    }
-
-    inserted = 0
-    updated = 0
-
-    for angle in angles:
-        name = angle["angle_name"]
-        url = angle["video_url"]
-        current = existing_by_name.get(name)
-
-        if current:
-            if clean_text(current.get("video_url")) != url:
-                (
-                    supabase
-                    .table("video_angles")
-                    .update({"video_url": url})
-                    .eq("id", current["id"])
-                    .execute()
-                )
-                updated += 1
-        else:
-            (
-                supabase
-                .table("video_angles")
-                .insert(
-                    {
-                        "play_id": play_id,
-                        "angle_name": name,
-                        "video_url": url,
-                    }
-                )
-                .execute()
-            )
-            inserted += 1
-
-    return inserted, updated
-
 
 # ============================================================
 # MAIN
@@ -783,8 +736,7 @@ def main():
 
     plays_inserted = 0
     plays_updated = 0
-    angles_inserted = 0
-    angles_updated = 0
+    video_clips_attached = 0
     challenges_found = 0
     errors = []
 
@@ -806,21 +758,17 @@ def main():
             records = extract_challenges_from_playlist(root_data, item)
             challenges_found += len(records)
 
-            for record, angles in records:
-                play_id, action = upsert_play(supabase, record)
+            for record in records:
+                _play_id, action = upsert_play(supabase, record)
 
                 if action == "inserted":
                     plays_inserted += 1
                 else:
                     plays_updated += 1
 
-                new_angles, changed_angles = sync_video_angles(
-                    supabase,
-                    play_id,
-                    angles,
+                video_clips_attached += len(
+                    record.get("video_urls") or []
                 )
-                angles_inserted += new_angles
-                angles_updated += changed_angles
 
             time.sleep(REQUEST_DELAY_SECONDS)
 
@@ -842,8 +790,7 @@ def main():
     print(f"Challenges found:          {challenges_found:,}")
     print(f"New plays inserted:        {plays_inserted:,}")
     print(f"Existing plays updated:    {plays_updated:,}")
-    print(f"New video angles:          {angles_inserted:,}")
-    print(f"Video angles refreshed:    {angles_updated:,}")
+    print(f"Video clips attached:      {video_clips_attached:,}")
     print(f"Errors:                    {len(errors):,}")
     print(f"Elapsed time:              {elapsed:.1f} seconds")
 

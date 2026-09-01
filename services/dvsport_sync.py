@@ -1238,7 +1238,7 @@ def extract_video_angles(
         )
     )
 
-    return angles
+    return angles[:30]
 
 
 # ============================================================
@@ -1585,18 +1585,13 @@ def extract_challenges_from_playlist(
                 ),
         }
 
-        angles = extract_video_angles(
+        record["video_urls"] = extract_video_angles(
             root_data,
             playlist,
             play,
         )
 
-        records.append(
-            (
-                record,
-                angles,
-            )
-        )
+        records.append(record)
 
     return records
 
@@ -1731,18 +1726,13 @@ def extract_pois_from_playlist(
                 None,
         }
 
-        angles = extract_video_angles(
+        record["video_urls"] = extract_video_angles(
             root_data,
             playlist,
             play,
         )
 
-        records.append(
-            (
-                record,
-                angles,
-            )
-        )
+        records.append(record)
 
     return records
 
@@ -2354,18 +2344,13 @@ def extract_faults_from_playlist(
                 None,
         }
 
-        angles = extract_video_angles(
+        record["video_urls"] = extract_video_angles(
             root_data,
             playlist,
             play,
         )
 
-        records.append(
-            (
-                record,
-                angles,
-            )
-        )
+        records.append(record)
 
     return records
 
@@ -2409,11 +2394,8 @@ def load_fault_group_records(
 
             deduped = {}
 
-            for record, angles in records:
-                deduped[record["dvsport_id"]] = (
-                    record,
-                    angles,
-                )
+            for record in records:
+                deduped[record["dvsport_id"]] = record
 
             return (
                 list(deduped.values()),
@@ -2450,7 +2432,7 @@ def get_existing_play(
         .table("plays")
         .select(
             "id,dvsport_id,conference,match_date,match_name,play_type,"
-            "set_number,score,dvsport_play_category,challenge_type"
+            "set_number,score,dvsport_play_category,challenge_type,video_urls"
         )
         .eq("dvsport_id", dvsport_id)
         .limit(1)
@@ -2505,7 +2487,7 @@ def existing_candidates_for_record(
         .table("plays")
         .select(
             "id,dvsport_id,conference,match_date,match_name,play_type,"
-            "set_number,score,dvsport_play_category,challenge_type"
+            "set_number,score,dvsport_play_category,challenge_type,video_urls"
         )
         .eq("conference", conference)
         .eq("match_date", match_date)
@@ -2531,25 +2513,10 @@ def existing_candidates_for_record(
     ]
 
 
-def video_angles_for_play(
-    supabase,
-    play_id,
-):
-    response = (
-        supabase
-        .table("video_angles")
-        .select("id,angle_name,video_url")
-        .eq("play_id", play_id)
-        .execute()
-    )
-
-    return response.data or []
-
 
 def secondary_existing_play_match(
     supabase,
     record,
-    angles,
 ):
     """
     Match an incoming play to legacy database rows even when dvsport_id
@@ -2569,10 +2536,13 @@ def secondary_existing_play_match(
     if not candidates:
         return None, 0
 
+    incoming_angles = record.get("video_urls") or []
+
     incoming_media = {
         normalized_media_identity(angle.get("video_url"))
-        for angle in angles
-        if normalized_media_identity(angle.get("video_url"))
+        for angle in incoming_angles
+        if isinstance(angle, dict)
+        and normalized_media_identity(angle.get("video_url"))
     }
 
     incoming_play_number = normalized_play_number(
@@ -2587,15 +2557,13 @@ def secondary_existing_play_match(
     play_number_matches = []
 
     for candidate in candidates:
-        candidate_angles = video_angles_for_play(
-            supabase,
-            candidate["id"],
-        )
+        candidate_angles = candidate.get("video_urls") or []
 
         candidate_media = {
             normalized_media_identity(angle.get("video_url"))
             for angle in candidate_angles
-            if normalized_media_identity(angle.get("video_url"))
+            if isinstance(angle, dict)
+            and normalized_media_identity(angle.get("video_url"))
         }
 
         if incoming_media and (
@@ -2614,6 +2582,7 @@ def secondary_existing_play_match(
                 )
             )
             for angle in candidate_angles
+            if isinstance(angle, dict)
         }
         candidate_numbers.discard("")
 
@@ -2649,7 +2618,6 @@ def secondary_existing_play_match(
 def upsert_play(
     supabase,
     record,
-    angles,
 ):
     """
     Upsert without creating duplicate Challenge, POI, or FAULT rows.
@@ -2673,7 +2641,6 @@ def upsert_play(
         ) = secondary_existing_play_match(
             supabase,
             record,
-            angles,
         )
 
         matched_by_secondary_identity = (
@@ -2737,115 +2704,31 @@ def upsert_play(
     )
 
 
-def sync_video_angles(
-    supabase,
-    play_id,
-    angles,
-):
-    """
-    Synchronize all camera angles for one play.
-
-    Angle name is the stable row identity.  This matters because DV Sport
-    signed URLs can change between syncs, while the camera/angle label stays
-    stable.  Repeated generic labels are numbered by extract_video_angles().
-    """
-    existing_response = (
-        supabase
-        .table("video_angles")
-        .select("id,angle_name,video_url")
-        .eq("play_id", play_id)
-        .execute()
-    )
-
-    existing = existing_response.data or []
-
-    existing_by_name = {
-        clean_text(row.get("angle_name")): row
-        for row in existing
-        if clean_text(row.get("angle_name"))
-    }
-
-    incoming_by_name = {
-        clean_text(angle.get("angle_name")): angle
-        for angle in angles
-        if (
-            clean_text(angle.get("angle_name"))
-            and clean_text(angle.get("video_url"))
-        )
-    }
-
-    inserted = 0
-    updated = 0
-    deleted = 0
-
-    for name, angle in incoming_by_name.items():
-        url = clean_text(angle.get("video_url"))
-        current = existing_by_name.get(name)
-
-        if current:
-            if clean_text(current.get("video_url")) != url:
-                (
-                    supabase
-                    .table("video_angles")
-                    .update({"video_url": url})
-                    .eq("id", current["id"])
-                    .execute()
-                )
-                updated += 1
-        else:
-            (
-                supabase
-                .table("video_angles")
-                .insert(
-                    {
-                        "play_id": play_id,
-                        "angle_name": name,
-                        "video_url": url,
-                    }
-                )
-                .execute()
-            )
-            inserted += 1
-
-    # Remove angles that DV Sport no longer associates with this play.
-    for name, current in existing_by_name.items():
-        if name not in incoming_by_name:
-            (
-                supabase
-                .table("video_angles")
-                .delete()
-                .eq("id", current["id"])
-                .execute()
-            )
-            deleted += 1
-
-    return inserted, updated, deleted
-
-
 def import_records(
     supabase,
     records,
 ):
+    """
+    Insert/update plays with their named DV Sport video URLs stored directly
+    in plays.video_urls. There is no separate video table.
+    """
     result = {
         "inserted": 0,
         "updated": 0,
         "duplicates_prevented": 0,
         "existing_duplicate_rows_detected": 0,
-        "angles_inserted": 0,
-        "angles_updated": 0,
-        "angles_deleted": 0,
+        "video_clips_attached": 0,
     }
 
-    for record, angles in records:
+    for record in records:
         (
-            play_id,
+            _play_id,
             action,
             matched_secondary,
             existing_match_count,
         ) = upsert_play(
             supabase,
             record,
-            angles,
         )
 
         result[action] += 1
@@ -2858,19 +2741,9 @@ def import_records(
                 "existing_duplicate_rows_detected"
             ] += existing_match_count - 1
 
-        (
-            angle_inserted,
-            angle_updated,
-            angle_deleted,
-        ) = sync_video_angles(
-            supabase,
-            play_id,
-            angles,
-        )
-
-        result["angles_inserted"] += angle_inserted
-        result["angles_updated"] += angle_updated
-        result["angles_deleted"] += angle_deleted
+        video_urls = record.get("video_urls") or []
+        if isinstance(video_urls, list):
+            result["video_clips_attached"] += len(video_urls)
 
     return result
 
@@ -2973,13 +2846,10 @@ def load_poi_group_records(
     # Deduplicate within the match by POI dvsport_id.
     deduped = {}
 
-    for record, angles in all_records:
+    for record in all_records:
         deduped[
             record["dvsport_id"]
-        ] = (
-            record,
-            angles,
-        )
+        ] = record
 
     return (
         list(deduped.values()),
@@ -3149,13 +3019,7 @@ def run_dvsport_sync(
         "existing_duplicate_rows_detected":
             0,
 
-        "angles_inserted":
-            0,
-
-        "angles_updated":
-            0,
-
-        "angles_deleted":
+        "video_clips_attached":
             0,
 
         "poi_combined_groups":
@@ -3265,12 +3129,9 @@ def run_dvsport_sync(
                 "existing_duplicate_rows_detected"
             ]
 
-            for key in (
-                "angles_inserted",
-                "angles_updated",
-                "angles_deleted",
-            ):
-                summary[key] += imported[key]
+            summary["video_clips_attached"] += imported[
+                "video_clips_attached"
+            ]
 
         except Exception as exc:
             summary["errors"].append(
@@ -3389,16 +3250,9 @@ def run_dvsport_sync(
                 "existing_duplicate_rows_detected"
             ]
 
-            for angle_key in (
-                "angles_inserted",
-                "angles_updated",
-                "angles_deleted",
-            ):
-                summary[
-                    angle_key
-                ] += imported[
-                    angle_key
-                ]
+            summary["video_clips_attached"] += imported[
+                "video_clips_attached"
+            ]
 
             # Only surface fallback errors if the group ultimately
             # produced no POIs. A broken older combined snapshot is
@@ -3493,8 +3347,9 @@ def run_dvsport_sync(
             summary["existing_duplicate_rows_detected"] += imported[
                 "existing_duplicate_rows_detected"
             ]
-            for angle_key in ("angles_inserted", "angles_updated", "angles_deleted"):
-                summary[angle_key] += imported[angle_key]
+            summary["video_clips_attached"] += imported[
+                "video_clips_attached"
+            ]
 
             if not records and fault_errors:
                 for error in fault_errors:

@@ -1,3 +1,4 @@
+import json
 from datetime import date, timedelta
 
 import pandas as pd
@@ -435,6 +436,69 @@ def video_sort_key(angle):
             angle.get("angle_name")
         ),
     )
+
+
+def video_angles_from_play(play):
+    """
+    Return only the named video URLs stored on this plays row.
+
+    Supabase returns JSONB as a Python list, but string JSON is accepted
+    too so the page remains robust during deployment/migration. Runtime
+    ids are added only so the existing PGM/Replay layout can distinguish
+    entries; they are not database ids.
+    """
+    raw = play.get("video_urls")
+
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw = []
+
+    if isinstance(raw, dict):
+        raw = [
+            {
+                "angle_name": name,
+                "video_url": url,
+            }
+            for name, url in raw.items()
+        ]
+
+    if not isinstance(raw, list):
+        return []
+
+    angles = []
+
+    for index, item in enumerate(raw[:30], start=1):
+        if not isinstance(item, dict):
+            continue
+
+        url = clean_text(
+            item.get("video_url")
+            or item.get("url")
+        )
+
+        if not has_usable_video_url(url):
+            continue
+
+        name = (
+            clean_text(
+                item.get("angle_name")
+                or item.get("name")
+            )
+            or f"Video {index}"
+        )
+
+        angles.append(
+            {
+                "id": index,
+                "angle_name": name,
+                "video_url": url,
+            }
+        )
+
+    angles.sort(key=video_sort_key)
+    return angles
 
 
 def render_video_player(
@@ -1209,26 +1273,7 @@ if bool(
 # TOP CHALLENGE DOWNLOAD
 # ============================================================
 
-try:
-    top_video_response = (
-        supabase
-        .table("video_angles")
-        .select("*")
-        .eq(
-            "play_id",
-            play["id"],
-        )
-        .order("id")
-        .execute()
-    )
-
-    top_video_angles = (
-        top_video_response.data
-        or []
-    )
-
-except Exception:
-    top_video_angles = []
+top_video_angles = video_angles_from_play(play)
 
 
 if normalized_play_type(
@@ -1332,26 +1377,7 @@ render_section_label(
     "Play Video"
 )
 
-try:
-    video_response = (
-        supabase
-        .table("video_angles")
-        .select("*")
-        .eq(
-            "play_id",
-            play["id"],
-        )
-        .order("id")
-        .execute()
-    )
-
-    angles = (
-        video_response.data
-        or []
-    )
-
-except Exception:
-    angles = []
+angles = video_angles_from_play(play)
 
 
 # CRITICAL:
