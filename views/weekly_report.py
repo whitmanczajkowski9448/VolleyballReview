@@ -5,6 +5,13 @@ import streamlit as st
 
 from services.database import get_supabase
 from services.auth import require_admin
+from services.challenge_email import (
+    dedupe_addresses,
+    gmail_compose_url,
+    load_saved_recipients,
+    recipient_label,
+    split_manual_addresses,
+)
 from services.ui import (
     render_empty,
     render_kpi,
@@ -75,6 +82,12 @@ def normalized_play_type(value):
         "PLAYS OF INTEREST",
     }:
         return "POI"
+
+    if text in {
+        "FAULT",
+        "FAULTS",
+    }:
+        return "Fault"
 
     return clean_text(value) or "Unknown"
 
@@ -200,6 +213,526 @@ def date_range_caption(
         f"{end_date:%B %d, %Y} "
         f"({day_count:,} day"
         f"{'' if day_count == 1 else 's'})"
+    )
+
+
+# ============================================================
+# WEEKLY EMAIL HELPERS
+# ============================================================
+
+def report_default_recipient_ids(
+    recipients,
+    conferences,
+):
+    conference_set = {
+        clean_text(value).upper()
+        for value in conferences
+        if clean_text(value)
+    }
+
+    defaults = []
+
+    for recipient in recipients:
+        if not recipient.get("is_default"):
+            continue
+
+        recipient_conference = clean_text(
+            recipient.get("conference")
+        ).upper()
+
+        if (
+            not recipient_conference
+            or recipient_conference in {"ALL", "NATIONAL"}
+            or recipient_conference in conference_set
+        ):
+            recipient_id = recipient.get("id")
+            if recipient_id is not None:
+                defaults.append(str(recipient_id))
+
+    return defaults
+
+
+def weekly_email_subject(
+    report_start,
+    report_end,
+):
+    if report_start == report_end:
+        date_text = f"{report_start:%B %d, %Y}"
+    elif report_start.year == report_end.year:
+        date_text = (
+            f"{report_start:%B %d} – "
+            f"{report_end:%B %d, %Y}"
+        )
+    else:
+        date_text = (
+            f"{report_start:%B %d, %Y} – "
+            f"{report_end:%B %d, %Y}"
+        )
+
+    return f"NCAA WVB Weekly Review | {date_text}"
+
+
+def email_value(value, fallback="—"):
+    text = clean_text(value)
+    return text if text else fallback
+
+
+def build_weekly_email_body(
+    report_start,
+    report_end,
+    challenge_df,
+    poi_df,
+    fault_df,
+    total_challenges,
+    total_pois,
+    total_faults,
+    complete_challenges,
+    needs_review_challenges,
+    not_viewed_challenges,
+    reversed_count,
+    confirmed_count,
+    stands_count,
+    failure_count,
+    reversal_rate,
+    average_seconds,
+    custom_message="",
+    include_challenge_details=True,
+    include_poi_fault_details=True,
+):
+    lines = [
+        "NCAA WOMEN'S VOLLEYBALL WEEKLY REVIEW",
+        "=" * 44,
+        f"Report period: {report_start:%B %d, %Y} through {report_end:%B %d, %Y}",
+        "",
+    ]
+
+    if clean_text(custom_message):
+        lines.extend([
+            clean_text(custom_message),
+            "",
+        ])
+
+    lines.extend([
+        "REPORT INVENTORY",
+        "-" * 20,
+        f"Challenges: {total_challenges:,}",
+        f"Plays of Interest: {total_pois:,}",
+        f"Faults: {total_faults:,}",
+        "",
+        "CHALLENGE REVIEW STATUS",
+        "-" * 24,
+        f"Complete: {complete_challenges:,}",
+        f"Needs Review: {needs_review_challenges:,}",
+        f"Not Viewed: {not_viewed_challenges:,}",
+        "",
+        "CHALLENGE METRICS",
+        "-" * 19,
+        f"Reversal rate: {reversal_rate:.1f}%",
+        f"Reversed: {reversed_count:,}",
+        f"Confirmed: {confirmed_count:,}",
+        f"Stands: {stands_count:,}",
+        f"Mechanical / video failure: {failure_count:,}",
+        f"Average review length: {format_seconds(average_seconds)}",
+        "",
+    ])
+
+    notes_df = pd.concat(
+        [
+            challenge_df,
+            poi_df,
+            fault_df,
+        ],
+        ignore_index=False,
+    )
+
+    notes_df = notes_df[
+        notes_df.get(
+            "weekly_summary_note",
+            pd.Series(index=notes_df.index, dtype="object"),
+        )
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        != ""
+    ].copy()
+
+    if not notes_df.empty:
+        lines.extend([
+            "SPECIAL COORDINATOR NOTES",
+            "-" * 25,
+        ])
+
+        notes_df = notes_df.sort_values(
+            ["report_date", "match_name"],
+            ascending=[True, True],
+        )
+
+        for _, row in notes_df.iterrows():
+            play_type = email_value(
+                row.get("report_play_type"),
+                "Play",
+            )
+            match_name = email_value(
+                row.get("match_name"),
+                "Match",
+            )
+            detail_parts = [
+                str(row.get("report_date") or ""),
+                play_type,
+                match_name,
+            ]
+
+            set_text = clean_text(row.get("set_number"))
+            score_text = clean_text(row.get("score"))
+            if set_text:
+                detail_parts.append(f"Set {set_text}")
+            if score_text:
+                detail_parts.append(score_text)
+
+            lines.append(" • ".join(
+                part for part in detail_parts if part
+            ))
+            lines.append(
+                email_value(row.get("weekly_summary_note"))
+            )
+            lines.append("")
+
+    if include_challenge_details and not challenge_df.empty:
+        lines.extend([
+            "CHALLENGE-BY-CHALLENGE SUMMARY",
+            "-" * 32,
+        ])
+
+        challenge_table = challenge_df.sort_values(
+            [
+                "report_date",
+                "conference",
+                "match_name",
+                "set_number",
+            ],
+            ascending=[True, True, True, True],
+        )
+
+        for index, (_, row) in enumerate(
+            challenge_table.iterrows(),
+            start=1,
+        ):
+            date_text = email_value(row.get("report_date"))
+            conference = email_value(row.get("conference"))
+            match_name = email_value(row.get("match_name"))
+            set_text = email_value(row.get("set_number"))
+            score_text = email_value(row.get("score"))
+            challenger = email_value(row.get("challenging_team"))
+            category = email_value(
+                row.get("ncaa_challenge_category")
+                or row.get("crs_category")
+                or row.get("dvsport_crs_category")
+            )
+            original_decision = email_value(
+                row.get("crs_original_decision")
+            )
+            dvsport_result = email_value(
+                row.get("challenge_result")
+            )
+            outcome = email_value(row.get("report_outcome"))
+            review_status = email_value(row.get("report_status"))
+            review_length = format_seconds(
+                row.get("challenge_length_seconds")
+            )
+            coordinator_note = clean_text(
+                row.get("weekly_summary_note")
+            )
+
+            lines.extend([
+                f"{index}. {date_text} • {conference} • {match_name}",
+                f"   Set {set_text} • Score {score_text} • Challenging Team: {challenger}",
+                f"   Category: {category}",
+                f"   Original Decision: {original_decision}",
+                f"   DV Sport Result: {dvsport_result}",
+                f"   VolleyReview Outcome: {outcome}",
+                f"   Review Length: {review_length} • Status: {review_status}",
+            ])
+
+            if coordinator_note:
+                lines.append(
+                    f"   Coordinator Note: {coordinator_note}"
+                )
+
+            lines.append("")
+
+    if include_poi_fault_details:
+        if not poi_df.empty:
+            lines.extend([
+                "PLAYS OF INTEREST",
+                "-" * 17,
+            ])
+
+            poi_table = poi_df.sort_values(
+                ["report_date", "conference", "match_name"]
+            )
+
+            for _, row in poi_table.iterrows():
+                lines.append(
+                    " • ".join([
+                        email_value(row.get("report_date")),
+                        email_value(row.get("conference")),
+                        email_value(row.get("match_name")),
+                        f"Set {email_value(row.get('set_number'))}",
+                        email_value(row.get("score")),
+                        email_value(row.get("report_status")),
+                    ])
+                )
+
+                note = clean_text(row.get("weekly_summary_note"))
+                if note:
+                    lines.append(f"  Note: {note}")
+
+            lines.append("")
+
+        if not fault_df.empty:
+            lines.extend([
+                "FAULTS",
+                "-" * 6,
+            ])
+
+            fault_table = fault_df.sort_values(
+                ["report_date", "conference", "match_name"]
+            )
+
+            for _, row in fault_table.iterrows():
+                fault_type = email_value(
+                    row.get("play_category")
+                    or row.get("dvsport_play_category")
+                )
+
+                lines.append(
+                    " • ".join([
+                        email_value(row.get("report_date")),
+                        email_value(row.get("conference")),
+                        email_value(row.get("match_name")),
+                        f"Set {email_value(row.get('set_number'))}",
+                        email_value(row.get("score")),
+                        fault_type,
+                        email_value(row.get("report_status")),
+                    ])
+                )
+
+                note = clean_text(row.get("weekly_summary_note"))
+                if note:
+                    lines.append(f"  Note: {note}")
+
+            lines.append("")
+
+    lines.extend([
+        "=" * 44,
+        "NCAA Women's Volleyball Review",
+    ])
+
+    return "\n".join(lines)
+
+
+@st.dialog(
+    "Generate Weekly Email Report",
+    width="large",
+)
+def weekly_email_dialog(
+    supabase,
+    report_start,
+    report_end,
+    period_df,
+    challenge_df,
+    poi_df,
+    fault_df,
+    total_challenges,
+    total_pois,
+    total_faults,
+    complete_challenges,
+    needs_review_challenges,
+    not_viewed_challenges,
+    reversed_count,
+    confirmed_count,
+    stands_count,
+    failure_count,
+    reversal_rate,
+    average_seconds,
+):
+    st.caption(
+        f"{report_start:%B %d, %Y} through {report_end:%B %d, %Y}"
+    )
+
+    saved_recipients = load_saved_recipients(
+        supabase
+    )
+
+    recipient_lookup = {
+        str(recipient.get("id")): recipient
+        for recipient in saved_recipients
+        if recipient.get("id") is not None
+    }
+
+    period_conferences = sorted({
+        clean_text(value)
+        for value in period_df.get(
+            "conference",
+            pd.Series(dtype="object"),
+        ).tolist()
+        if clean_text(value)
+    })
+
+    default_ids = report_default_recipient_ids(
+        saved_recipients,
+        period_conferences,
+    )
+
+    selected_ids = st.multiselect(
+        "Saved Recipients",
+        options=list(recipient_lookup.keys()),
+        default=[
+            recipient_id
+            for recipient_id in default_ids
+            if recipient_id in recipient_lookup
+        ],
+        format_func=lambda recipient_id: recipient_label(
+            recipient_lookup[recipient_id]
+        ),
+        key="weekly_email_saved_recipients",
+    )
+
+    manual_to = st.text_area(
+        "Additional To Addresses",
+        placeholder="name@example.com; second@example.com",
+        height=70,
+        key="weekly_email_manual_to",
+    )
+
+    cc_value = st.text_input(
+        "Cc",
+        key="weekly_email_cc",
+    )
+
+    bcc_value = st.text_input(
+        "Bcc",
+        key="weekly_email_bcc",
+    )
+
+    subject = st.text_input(
+        "Subject",
+        value=weekly_email_subject(
+            report_start,
+            report_end,
+        ),
+        key="weekly_email_subject",
+    )
+
+    custom_message = st.text_area(
+        "Opening Message",
+        placeholder=(
+            "Optional note that will appear above the report."
+        ),
+        height=90,
+        key="weekly_email_message",
+    )
+
+    option1, option2 = st.columns(2)
+
+    with option1:
+        include_challenge_details = st.checkbox(
+            "Include challenge-by-challenge summary",
+            value=True,
+            key="weekly_email_include_challenges",
+        )
+
+    with option2:
+        include_poi_fault_details = st.checkbox(
+            "Include POI and Fault details",
+            value=True,
+            key="weekly_email_include_other_plays",
+        )
+
+    body = build_weekly_email_body(
+        report_start=report_start,
+        report_end=report_end,
+        challenge_df=challenge_df,
+        poi_df=poi_df,
+        fault_df=fault_df,
+        total_challenges=total_challenges,
+        total_pois=total_pois,
+        total_faults=total_faults,
+        complete_challenges=complete_challenges,
+        needs_review_challenges=needs_review_challenges,
+        not_viewed_challenges=not_viewed_challenges,
+        reversed_count=reversed_count,
+        confirmed_count=confirmed_count,
+        stands_count=stands_count,
+        failure_count=failure_count,
+        reversal_rate=reversal_rate,
+        average_seconds=average_seconds,
+        custom_message=custom_message,
+        include_challenge_details=include_challenge_details,
+        include_poi_fault_details=include_poi_fault_details,
+    )
+
+    selected_saved_addresses = [
+        clean_text(
+            recipient_lookup[recipient_id].get("email")
+        )
+        for recipient_id in selected_ids
+        if recipient_id in recipient_lookup
+    ]
+
+    to_addresses = dedupe_addresses(
+        selected_saved_addresses
+        + split_manual_addresses(
+            manual_to
+        )
+    )
+
+    cc_addresses = dedupe_addresses(
+        split_manual_addresses(
+            cc_value
+        )
+    )
+
+    bcc_addresses = dedupe_addresses(
+        split_manual_addresses(
+            bcc_value
+        )
+    )
+
+    compose_url = gmail_compose_url(
+        to_addresses,
+        cc_addresses,
+        bcc_addresses,
+        subject,
+        body,
+    )
+
+    st.text_area(
+        "Email Preview",
+        value=body,
+        height=360,
+        key="weekly_email_preview",
+        disabled=True,
+    )
+
+    if not to_addresses:
+        st.info(
+            "No To recipient is selected yet. Gmail can still open, "
+            "and you can add recipients there."
+        )
+
+    if len(compose_url) > 7500:
+        st.warning(
+            "This is a long report. Gmail URL composition can be less "
+            "reliable with very large bodies. If Gmail truncates it, "
+            "copy the Email Preview text into the draft."
+        )
+
+    st.link_button(
+        "✉ Open Weekly Report in Gmail",
+        compose_url,
+        type="primary",
+        use_container_width=True,
     )
 
 
@@ -498,6 +1031,13 @@ poi_df = period_df[
     == "POI"
 ].copy()
 
+fault_df = period_df[
+    period_df[
+        "report_play_type"
+    ]
+    == "Fault"
+].copy()
+
 
 # ============================================================
 # REPORT INVENTORY
@@ -513,6 +1053,9 @@ total_challenges = len(
 )
 total_pois = len(
     poi_df
+)
+total_faults = len(
+    fault_df
 )
 
 complete_challenges = int(
@@ -547,8 +1090,8 @@ unfinished_challenges = (
     - complete_challenges
 )
 
-k1, k2, k3, k4, k5 = st.columns(
-    5
+k1, k2, k3, k4, k5, k6 = st.columns(
+    6
 )
 
 with k1:
@@ -561,7 +1104,7 @@ with k1:
 
 with k2:
     render_kpi(
-        "POIs / FAULTS",
+        "POIs",
         f"{total_pois:,}",
         "Plays of interest",
         "purple",
@@ -569,13 +1112,21 @@ with k2:
 
 with k3:
     render_kpi(
+        "Faults",
+        f"{total_faults:,}",
+        "Imported fault clips",
+        "green",
+    )
+
+with k4:
+    render_kpi(
         "Complete",
         f"{complete_challenges:,}",
         "Completed challenges",
         "green",
     )
 
-with k4:
+with k5:
     render_kpi(
         "Needs Review",
         f"{needs_review_challenges:,}",
@@ -583,7 +1134,7 @@ with k4:
         "purple",
     )
 
-with k5:
+with k6:
     render_kpi(
         "Not Viewed",
         f"{not_viewed_challenges:,}",
@@ -642,6 +1193,13 @@ else:
 render_section_label(
     "Challenge Metrics"
 )
+
+reversed_count = 0
+confirmed_count = 0
+stands_count = 0
+failure_count = 0
+reversal_rate = 0.0
+average_seconds = None
 
 if challenge_df.empty:
     st.caption(
@@ -1004,6 +1562,105 @@ if not poi_df.empty:
 
 
 # ============================================================
+# FAULT SUMMARY
+# ============================================================
+
+if not fault_df.empty:
+    render_section_label(
+        "Faults"
+    )
+
+    fault_display = (
+        fault_df[
+            [
+                "report_date",
+                "conference",
+                "match_name",
+                "set_number",
+                "score",
+                "dvsport_play_category",
+                "review_status",
+                "weekly_summary_note",
+            ]
+        ]
+        .copy()
+        .sort_values(
+            [
+                "report_date",
+                "conference",
+                "match_name",
+            ]
+        )
+    )
+
+    fault_display.columns = [
+        "Date",
+        "Conference",
+        "Match",
+        "Set",
+        "Score",
+        "DV Sport Fault",
+        "Review Status",
+        "Coordinator Note",
+    ]
+
+    st.dataframe(
+        fault_display,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# ============================================================
+# EMAIL REPORT
+# ============================================================
+
+render_section_label(
+    "Email Report"
+)
+
+with st.container(
+    border=True
+):
+    st.markdown(
+        "**Generate a coordinator-ready email from this exact report window.**"
+    )
+    st.caption(
+        "The email includes report inventory, challenge metrics, coordinator "
+        "notes, and optional play-by-play details. Saved recipients from the "
+        "challenge email system are available in the email dialog."
+    )
+
+    if st.button(
+        "✉ Generate Email Report",
+        type="primary",
+        use_container_width=True,
+        key="weekly_report_generate_email",
+    ):
+        weekly_email_dialog(
+            supabase=supabase,
+            report_start=report_start,
+            report_end=report_end,
+            period_df=period_df,
+            challenge_df=challenge_df,
+            poi_df=poi_df,
+            fault_df=fault_df,
+            total_challenges=total_challenges,
+            total_pois=total_pois,
+            total_faults=total_faults,
+            complete_challenges=complete_challenges,
+            needs_review_challenges=needs_review_challenges,
+            not_viewed_challenges=not_viewed_challenges,
+            reversed_count=reversed_count,
+            confirmed_count=confirmed_count,
+            stands_count=stands_count,
+            failure_count=failure_count,
+            reversal_rate=reversal_rate,
+            average_seconds=average_seconds,
+        )
+
+
+# ============================================================
 # REPORT PERIOD SUMMARY
 # ============================================================
 
@@ -1015,6 +1672,7 @@ st.caption(
         f"{report_start:%m/%d/%Y} – "
         f"{report_end:%m/%d/%Y} • "
         f"{total_challenges:,} challenges • "
-        f"{total_pois:,} POIs / FAULTS"
+        f"{total_pois:,} POIs • "
+        f"{total_faults:,} faults"
     )
 )
