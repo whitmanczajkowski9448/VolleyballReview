@@ -2,11 +2,11 @@ from datetime import date, timedelta
 
 import json
 import pandas as pd
-import requests
 import streamlit as st
 
 from services.database import get_supabase
 from services.dvsport_media import fresh_video_url
+from services.video_player import render_keyboard_video_workspace
 from services.auth import is_admin
 from services.ui import (
     render_page_header,
@@ -506,59 +506,6 @@ def video_angles_from_play(play):
 
     angles.sort(key=video_sort_key)
     return angles
-
-
-def render_video_player(
-    angle,
-    primary=False,
-):
-    url = clean_text(
-        angle.get("video_url")
-    )
-
-    if not has_usable_video_url(url):
-        return
-
-    name = (
-        clean_text(
-            angle.get("angle_name")
-        )
-        or "Video"
-    )
-
-    if primary:
-        st.subheader(name)
-    else:
-        st.markdown(
-            f"**{name}**"
-        )
-
-    sas_error = clean_text(
-        angle.get("sas_error")
-    )
-
-    if sas_error:
-        st.warning(
-            (
-                "Could not refresh this DV Sport video's signed URL. "
-                f"{sas_error}"
-            ),
-            icon="⚠️",
-        )
-
-    st.video(url)
-
-    if url.lower().startswith(
-        (
-            "http://",
-            "https://",
-        )
-    ):
-        st.link_button(
-            "Open Video",
-            url,
-            use_container_width=True,
-        )
 
 
 
@@ -1396,9 +1343,9 @@ render_section_label(
 
 angles = video_angles_from_play(play)
 
-
-# CRITICAL:
-# Remove rows with no real URL BEFORE doing any layout work.
+# Remove missing/blank URLs before handing the angle collection to the
+# keyboard-aware workspace. The database remains challenge/play-centric:
+# every angle still comes directly from this play's video_urls field.
 angles = [
     angle
     for angle in angles
@@ -1413,108 +1360,21 @@ angles.sort(
     key=video_sort_key
 )
 
-
 if not angles:
     render_empty(
         "DV Sport does not have a video URL attached to this play."
     )
 
 else:
-    pgm = next(
-        (
-            angle
-            for angle in angles
-            if is_pgm(angle)
-        ),
-        None,
+    st.caption(
+        "Click a video to make it the active shortcut angle. "
+        "Keyboard controls only act on the highlighted ACTIVE player."
     )
 
-    replay_output = next(
-        (
-            angle
-            for angle in angles
-            if is_replay_output(angle)
-        ),
-        None,
+    render_keyboard_video_workspace(
+        angles,
+        key=f"viewer_play_{play.get('id', 'unknown')}",
     )
-
-    primary_ids = {
-        angle["id"]
-        for angle in [
-            pgm,
-            replay_output,
-        ]
-        if angle is not None
-    }
-
-    primary_angles = [
-        angle
-        for angle in [
-            pgm,
-            replay_output,
-        ]
-        if angle is not None
-    ]
-
-
-    if len(primary_angles) == 2:
-        left, right = st.columns(2)
-
-        with left:
-            render_video_player(
-                primary_angles[0],
-                primary=True,
-            )
-
-        with right:
-            render_video_player(
-                primary_angles[1],
-                primary=True,
-            )
-
-    elif len(primary_angles) == 1:
-        render_video_player(
-            primary_angles[0],
-            primary=True,
-        )
-
-
-    secondary = [
-        angle
-        for angle in angles
-        if angle.get("id")
-        not in primary_ids
-    ]
-
-
-    if secondary:
-        st.caption(
-            "ADDITIONAL ANGLES"
-        )
-
-        for start in range(
-            0,
-            len(secondary),
-            3,
-        ):
-            row = secondary[
-                start:
-                start + 3
-            ]
-
-            columns = st.columns(
-                len(row)
-            )
-
-            for column, angle in zip(
-                columns,
-                row,
-            ):
-                with column:
-                    render_video_player(
-                        angle,
-                        primary=False,
-                    )
 
 
 # ============================================================
