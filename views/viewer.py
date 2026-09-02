@@ -1367,8 +1367,9 @@ if not angles:
 
 else:
     st.caption(
-        "Click a video to make it the active shortcut angle. "
-        "Keyboard controls only act on the highlighted ACTIVE player."
+        "One main player stays in control. Hover a camera button for a preview, "
+        "then click it (or use D/F/P/R) to switch angles at the same timestamp. "
+        "Press \\ to enter or exit the full video workspace."
     )
 
     render_keyboard_video_workspace(

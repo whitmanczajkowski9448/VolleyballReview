@@ -45,31 +45,12 @@ def _is_replay(angle):
     }
 
 
-def _workspace_height(angles):
-    """Estimate iframe height for the current desktop-oriented grid."""
-    primary_count = sum(
-        1
-        for angle in angles
-        if (
-            bool(angle.get("is_program"))
-            or bool(angle.get("is_replay"))
-            or _is_program(angle)
-            or _is_replay(angle)
-        )
-    )
-    primary_count = min(primary_count, 2)
-    secondary_count = max(len(angles) - primary_count, 0)
-
-    primary_rows = 1 if primary_count else 0
-    secondary_rows = math.ceil(secondary_count / 3) if secondary_count else 0
-
-    # Toolbar + shortcut legend + primary grid + secondary grid.
-    return int(
-        185
-        + (primary_rows * 455)
-        + (secondary_rows * 315)
-        + (70 if secondary_rows else 0)
-    )
+def _workspace_height(angle_count):
+    # One main player plus a wrapping camera-button strip. The estimate keeps
+    # the component from developing an internal scrollbar on normal desktop
+    # layouts even when a play has many camera angles.
+    rows = max(1, math.ceil(max(angle_count, 1) / 6))
+    return min(980, 650 + (rows * 58))
 
 
 def render_keyboard_video_workspace(
@@ -79,7 +60,8 @@ def render_keyboard_video_workspace(
     frame_rate=DEFAULT_FRAME_RATE,
 ):
     """
-    Render all video angles for one play in a keyboard-aware review workspace.
+    Render one main video player with keyboard review controls and camera
+    selection buttons for every angle attached to the selected play.
 
     Shortcuts:
       Z         = back 5 seconds
@@ -91,11 +73,15 @@ def render_keyboard_video_workspace(
       P         = program feed
       R         = replay output
       1 / 2 / 3 = 0.5x / 1.0x / 2.0x
-      Shift+Esc = fullscreen active angle
+      \\         = enter / exit fullscreen workspace
 
-    The component intentionally owns the keyboard focus. Clicking outside the
-    video workspace (for example, into an Editor form field) removes focus and
-    prevents normal typing from triggering video shortcuts.
+    Camera changes preserve the current time, play/pause state, and playback
+    speed. Fullscreen is applied to the entire workspace—not the native video
+    element—so camera buttons and keyboard listeners remain available.
+
+    Hovering a camera button lazily loads a muted preview at approximately the
+    main player's current timestamp. Clicking the button makes that angle the
+    active source in the main player.
     """
     usable = []
 
@@ -145,7 +131,8 @@ def render_keyboard_video_workspace(
     ).replace("</", "<\\/")
 
     frame_step = 1.0 / fps
-    height = _workspace_height(usable)
+    height = _workspace_height(len(usable))
+    safe_title = html.escape(dom_id)
 
     markup = f"""
 <!DOCTYPE html>
@@ -166,7 +153,8 @@ def render_keyboard_video_workspace(
         --lav: #b9a7ff;
         --text: #f5f9ff;
         --muted: #9cb0c8;
-        --border: rgba(143, 200, 255, .20);
+        --border: rgba(143, 200, 255, 0.20);
+        --active: rgba(104, 216, 255, 0.95);
     }}
 
     * {{ box-sizing: border-box; }}
@@ -180,64 +168,69 @@ def render_keyboard_video_workspace(
                      BlinkMacSystemFont, "Segoe UI", sans-serif;
     }}
 
-    body {{ outline: none; }}
-
-    .workspace {{
+    #vr-{safe_title} {{
         width: 100%;
+        background:
+            radial-gradient(circle at 10% 0%, rgba(104,216,255,.07), transparent 30%),
+            linear-gradient(145deg, #071425 0%, #08182b 55%, #06101e 100%);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 14px;
         outline: none;
+        position: relative;
     }}
 
-    .control-bar {{
-        position: sticky;
-        top: 0;
-        z-index: 20;
+    #vr-{safe_title}:fullscreen {{
+        width: 100vw;
+        height: 100vh;
+        border: 0;
+        border-radius: 0;
+        padding: 18px 22px;
+        background: #02060c;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }}
+
+    .topbar {{
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 16px;
-        padding: 12px 14px;
-        margin-bottom: 10px;
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        background: linear-gradient(135deg, #0b1b31, #0e2440);
-        box-shadow: 0 10px 28px rgba(0,0,0,.18);
-    }}
-
-    .active-stack {{
-        display: flex;
+        gap: 12px;
         flex-wrap: wrap;
-        align-items: center;
-        gap: 8px;
-        min-width: 0;
+        margin-bottom: 10px;
     }}
 
-    .active-pill {{
-        display: inline-flex;
+    .active-summary {{
+        min-width: 0;
+        display: flex;
         align-items: center;
-        gap: 7px;
-        padding: 6px 10px;
-        border-radius: 999px;
-        border: 1px solid rgba(104, 216, 255, .48);
-        background: rgba(10, 103, 200, .20);
-        color: var(--text);
-        font-size: 12px;
+        gap: 9px;
         font-weight: 800;
-        letter-spacing: .04em;
-        text-transform: uppercase;
+        letter-spacing: .01em;
+    }}
+
+    .active-dot {{
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: var(--mint);
+        box-shadow: 0 0 0 4px rgba(140,240,203,.12),
+                    0 0 16px rgba(140,240,203,.55);
+        flex: 0 0 auto;
+    }}
+
+    .active-angle {{
+        color: var(--sky);
+        max-width: 360px;
+        overflow: hidden;
+        text-overflow: ellipsis;
         white-space: nowrap;
     }}
 
-    .dot {{
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: var(--mint);
-        box-shadow: 0 0 12px rgba(140,240,203,.9);
-    }}
-
-    .state {{
+    .play-status {{
         color: var(--muted);
-        font-size: 12px;
+        font-size: 13px;
         font-weight: 650;
         white-space: nowrap;
     }}
@@ -245,603 +238,602 @@ def render_keyboard_video_workspace(
     .focus-note {{
         color: var(--muted);
         font-size: 12px;
-        text-align: right;
+        margin-bottom: 10px;
     }}
 
-    .shortcut-strip {{
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px 12px;
-        align-items: center;
-        padding: 0 2px 12px;
-        color: var(--muted);
-        font-size: 11px;
-        line-height: 1.3;
-    }}
-
-    .shortcut {{ white-space: nowrap; }}
-
-    kbd {{
-        display: inline-block;
-        min-width: 22px;
-        padding: 2px 6px;
-        margin-right: 3px;
-        border: 1px solid rgba(156,176,200,.34);
-        border-bottom-width: 2px;
-        border-radius: 5px;
-        background: rgba(255,255,255,.055);
-        color: var(--text);
-        font: 700 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
-        text-align: center;
-    }}
-
-    .grid {{
-        display: grid;
-        gap: 14px;
-        width: 100%;
-    }}
-
-    .primary-grid {{
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        margin-bottom: 16px;
-    }}
-
-    .primary-grid.one {{
-        grid-template-columns: minmax(0, 1fr);
-    }}
-
-    .secondary-label {{
-        margin: 4px 2px 8px;
-        color: var(--muted);
-        font-size: 11px;
-        font-weight: 800;
-        letter-spacing: .10em;
-        text-transform: uppercase;
-    }}
-
-    .secondary-grid {{
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-    }}
-
-    .video-card {{
+    .main-stage {{
         position: relative;
-        min-width: 0;
+        width: 100%;
+        background: #000;
+        border: 2px solid rgba(104,216,255,.34);
+        border-radius: 14px;
         overflow: hidden;
-        border: 1px solid var(--border);
-        border-radius: 13px;
-        background: linear-gradient(180deg, var(--card2), var(--card));
-        box-shadow: 0 8px 24px rgba(0,0,0,.18);
-        transition: border-color .12s ease,
-                    box-shadow .12s ease,
-                    transform .12s ease;
+        box-shadow: 0 14px 40px rgba(0,0,0,.28);
     }}
 
-    .video-card:hover {{
-        border-color: rgba(104, 216, 255, .42);
-    }}
-
-    .video-card.active {{
-        border: 2px solid var(--sky);
-        box-shadow:
-            0 0 0 2px rgba(104,216,255,.12),
-            0 0 28px rgba(104,216,255,.18),
-            0 12px 30px rgba(0,0,0,.24);
-    }}
-
-    .card-header {{
+    #vr-{safe_title}:fullscreen .main-stage {{
+        flex: 1 1 auto;
+        min-height: 0;
         display: flex;
         align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        padding: 9px 11px;
-        min-height: 40px;
+        justify-content: center;
+        border-color: rgba(104,216,255,.60);
     }}
 
-    .angle-name {{
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        font-size: 13px;
-        font-weight: 800;
-        letter-spacing: .01em;
-    }}
-
-    .active-badge {{
-        display: none;
-        flex: 0 0 auto;
-        padding: 4px 7px;
-        border-radius: 999px;
-        background: var(--sky);
-        color: #04111f;
-        font-size: 9px;
-        font-weight: 900;
-        letter-spacing: .07em;
-        text-transform: uppercase;
-    }}
-
-    .video-card.active .active-badge {{ display: inline-flex; }}
-
-    video {{
-        display: block;
+    .main-stage video {{
         width: 100%;
+        display: block;
         aspect-ratio: 16 / 9;
         background: #000;
-        object-fit: contain;
+        max-height: 68vh;
     }}
 
-    .card-footer {{
+    #vr-{safe_title}:fullscreen .main-stage video {{
+        width: 100%;
+        height: 100%;
+        max-height: none;
+        object-fit: contain;
+        aspect-ratio: auto;
+    }}
+
+    .stage-badge {{
+        position: absolute;
+        top: 12px;
+        left: 12px;
+        z-index: 5;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 7px 10px;
+        border-radius: 999px;
+        background: rgba(7,20,37,.86);
+        border: 1px solid rgba(104,216,255,.48);
+        backdrop-filter: blur(8px);
+        font-size: 12px;
+        font-weight: 800;
+        box-shadow: 0 6px 20px rgba(0,0,0,.25);
+        pointer-events: none;
+    }}
+
+    .stage-badge span {{ color: var(--sky); }}
+
+    .camera-title {{
+        margin: 13px 0 8px;
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+    }}
+
+    .camera-title strong {{
+        font-size: 12px;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+    }}
+
+    .camera-title span {{
+        color: var(--muted);
+        font-size: 11px;
+    }}
+
+    .camera-strip {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        position: relative;
+    }}
+
+    #vr-{safe_title}:fullscreen .camera-title {{
+        margin-top: 10px;
+    }}
+
+    #vr-{safe_title}:fullscreen .camera-strip {{
+        flex: 0 0 auto;
+    }}
+
+    .camera-wrap {{
+        position: relative;
+    }}
+
+    .camera-btn {{
+        appearance: none;
+        border: 1px solid rgba(143,200,255,.22);
+        border-radius: 10px;
+        padding: 9px 12px;
+        min-width: 94px;
+        max-width: 190px;
+        background: linear-gradient(180deg, #132b49 0%, #10253f 100%);
+        color: var(--text);
+        font: inherit;
+        font-size: 12px;
+        font-weight: 750;
+        cursor: pointer;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        transition: border-color .12s ease, transform .12s ease,
+                    box-shadow .12s ease, background .12s ease;
+    }}
+
+    .camera-btn:hover {{
+        transform: translateY(-1px);
+        border-color: rgba(104,216,255,.72);
+    }}
+
+    .camera-btn.active {{
+        color: #fff;
+        border-color: var(--active);
+        background: linear-gradient(180deg, #0b579c 0%, #0a3f75 100%);
+        box-shadow: 0 0 0 2px rgba(104,216,255,.12),
+                    0 7px 22px rgba(10,103,200,.28);
+    }}
+
+    .camera-btn .mini {{
+        display: inline-block;
+        margin-left: 6px;
+        color: var(--mint);
+        font-size: 9px;
+        vertical-align: 1px;
+    }}
+
+    .preview {{
+        position: absolute;
+        left: 50%;
+        bottom: calc(100% + 10px);
+        transform: translateX(-50%) translateY(4px);
+        width: 250px;
+        background: #06111f;
+        border: 1px solid rgba(104,216,255,.44);
+        border-radius: 12px;
+        padding: 8px;
+        box-shadow: 0 16px 45px rgba(0,0,0,.48);
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+        transition: opacity .12s ease, transform .12s ease,
+                    visibility .12s ease;
+        z-index: 30;
+    }}
+
+    .camera-wrap:hover .preview,
+    .camera-wrap:focus-within .preview {{
+        opacity: 1;
+        visibility: visible;
+        transform: translateX(-50%) translateY(0);
+    }}
+
+    .preview video {{
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        object-fit: contain;
+        display: block;
+        background: #000;
+        border-radius: 7px;
+    }}
+
+    .preview-label {{
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 8px;
-        padding: 7px 10px 9px;
-        min-height: 34px;
-    }}
-
-    .card-status {{
+        padding-top: 6px;
         color: var(--muted);
         font-size: 10px;
+    }}
+
+    .preview-label strong {{
+        color: var(--text);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
     }}
 
-    .open-link {{
-        flex: 0 0 auto;
-        color: var(--sky);
+    .shortcut-bar {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px 12px;
+        align-items: center;
+        margin-top: 13px;
+        padding: 10px 11px;
+        border-radius: 11px;
+        background: rgba(11,27,49,.78);
+        border: 1px solid rgba(143,200,255,.14);
+        color: var(--muted);
+        font-size: 11px;
+    }}
+
+    #vr-{safe_title}:fullscreen .shortcut-bar {{
+        margin-top: 9px;
+        padding: 7px 10px;
+    }}
+
+    .shortcut {{
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        white-space: nowrap;
+    }}
+
+    kbd {{
+        min-width: 22px;
+        padding: 2px 6px;
+        text-align: center;
+        color: var(--text);
+        background: #071425;
+        border: 1px solid rgba(143,200,255,.28);
+        border-bottom-color: rgba(143,200,255,.42);
+        border-radius: 5px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         font-size: 10px;
-        font-weight: 750;
-        text-decoration: none;
+        box-shadow: inset 0 -1px 0 rgba(255,255,255,.05);
     }}
 
-    .error {{
-        padding: 7px 10px 9px;
-        color: #ffd5d5;
-        background: rgba(150, 30, 30, .16);
-        border-top: 1px solid rgba(255, 125, 125, .15);
-        font-size: 10px;
-        line-height: 1.35;
+    .warning {{
+        margin-top: 8px;
+        padding: 8px 10px;
+        border: 1px solid rgba(255,199,92,.35);
+        border-radius: 9px;
+        color: #ffd58a;
+        background: rgba(114,73,10,.20);
+        font-size: 11px;
     }}
 
-    @media (max-width: 950px) {{
-        .secondary-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-    }}
-
-    @media (max-width: 720px) {{
-        .control-bar {{ align-items: flex-start; flex-direction: column; }}
-        .focus-note {{ text-align: left; }}
-        .primary-grid,
-        .primary-grid.one,
-        .secondary-grid {{ grid-template-columns: minmax(0, 1fr); }}
+    @media (max-width: 760px) {{
+        .camera-btn {{ min-width: 78px; max-width: 145px; }}
+        .preview {{ width: 210px; }}
+        .main-stage video {{ max-height: none; }}
     }}
 </style>
 </head>
-<body tabindex="0">
-<div id="{html.escape(dom_id)}" class="workspace" tabindex="0">
-    <div class="control-bar">
-        <div class="active-stack">
-            <div class="active-pill">
-                <span class="dot"></span>
-                <span>Shortcut Control:</span>
-                <span id="active-name">—</span>
-            </div>
-            <span id="play-state" class="state">Paused</span>
-            <span id="speed-state" class="state">1.0×</span>
-            <span id="time-state" class="state">0:00.000</span>
+<body>
+<div id="vr-{safe_title}" tabindex="0" aria-label="VolleyReview video controls">
+    <div class="topbar">
+        <div class="active-summary">
+            <span class="active-dot"></span>
+            <span>ACTIVE CAMERA:</span>
+            <span class="active-angle" id="active-angle">—</span>
         </div>
-        <div id="focus-note" class="focus-note">
-            Click any video to activate shortcuts on that angle.
-        </div>
+        <div class="play-status" id="play-status">Paused • 1.0× • 0:00.000</div>
     </div>
 
-    <div class="shortcut-strip" aria-label="Video keyboard shortcuts">
+    <div class="focus-note" id="focus-note">
+        Shortcuts ready. Camera buttons switch the main player while preserving time and speed.
+    </div>
+
+    <div class="main-stage" id="main-stage">
+        <div class="stage-badge">● ACTIVE &nbsp;<span id="stage-angle">—</span></div>
+        <video id="main-video" controls preload="metadata" playsinline></video>
+    </div>
+
+    <div class="camera-title">
+        <strong>Camera Angles</strong>
+        <span>Hover for a preview • click to load in the main player</span>
+    </div>
+    <div class="camera-strip" id="camera-strip"></div>
+    <div id="url-warning"></div>
+
+    <div class="shortcut-bar">
         <span class="shortcut"><kbd>Z</kbd>-5 sec</span>
         <span class="shortcut"><kbd>X</kbd>-1 frame</span>
-        <span class="shortcut"><kbd>C</kbd>play/pause</span>
+        <span class="shortcut"><kbd>C</kbd>play / pause</span>
         <span class="shortcut"><kbd>V</kbd>+1 frame</span>
         <span class="shortcut"><kbd>B</kbd>+5 sec</span>
-        <span class="shortcut"><kbd>D</kbd>previous angle</span>
-        <span class="shortcut"><kbd>F</kbd>next angle</span>
+        <span class="shortcut"><kbd>D</kbd>previous cam</span>
+        <span class="shortcut"><kbd>F</kbd>next cam</span>
         <span class="shortcut"><kbd>P</kbd>program</span>
-        <span class="shortcut"><kbd>R</kbd>replay output</span>
+        <span class="shortcut"><kbd>R</kbd>replay</span>
         <span class="shortcut"><kbd>1</kbd>0.5×</span>
         <span class="shortcut"><kbd>2</kbd>1×</span>
         <span class="shortcut"><kbd>3</kbd>2×</span>
-        <span class="shortcut"><kbd>Shift+Esc</kbd>fullscreen</span>
-    </div>
-
-    <div id="primary-grid" class="grid primary-grid"></div>
-    <div id="secondary-block" style="display:none;">
-        <div class="secondary-label">Additional Angles</div>
-        <div id="secondary-grid" class="grid secondary-grid"></div>
+        <span class="shortcut"><kbd>\\</kbd>fullscreen</span>
     </div>
 </div>
 
 <script>
 (() => {{
-    "use strict";
-
-    const angles = {angle_json};
-    const frameStep = {frame_step:.10f};
-    const root = document.getElementById({json.dumps(dom_id)});
-    const primaryGrid = document.getElementById("primary-grid");
-    const secondaryGrid = document.getElementById("secondary-grid");
-    const secondaryBlock = document.getElementById("secondary-block");
-    const activeNameEl = document.getElementById("active-name");
-    const playStateEl = document.getElementById("play-state");
-    const speedStateEl = document.getElementById("speed-state");
-    const timeStateEl = document.getElementById("time-state");
+    const root = document.getElementById("vr-{safe_title}");
+    const mainVideo = document.getElementById("main-video");
+    const cameraStrip = document.getElementById("camera-strip");
+    const activeAngleEl = document.getElementById("active-angle");
+    const stageAngleEl = document.getElementById("stage-angle");
+    const statusEl = document.getElementById("play-status");
     const focusNoteEl = document.getElementById("focus-note");
+    const warningEl = document.getElementById("url-warning");
+    const angles = {angle_json};
+    const fallbackFrameStep = {frame_step:.12f};
 
-    const players = [];
     let activeIndex = -1;
-    let componentFocused = false;
+    let measuredFrameStep = fallbackFrameStep;
+    let lastFrameMediaTime = null;
+    let pendingState = null;
+    const previews = new Map();
 
-    function formatTime(seconds) {{
-        if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
-        const mins = Math.floor(seconds / 60);
-        const secs = seconds - (mins * 60);
-        return `${{mins}}:${{secs.toFixed(3).padStart(6, "0")}}`;
+    function formatTime(value) {{
+        const seconds = Number.isFinite(value) ? Math.max(value, 0) : 0;
+        const minutes = Math.floor(seconds / 60);
+        const remainder = seconds - (minutes * 60);
+        return `${{minutes}}:${{remainder.toFixed(3).padStart(6, "0")}}`;
     }}
 
-    function statusText(video) {{
-        if (!video) return "";
-        return `${{video.paused ? "Paused" : "Playing"}} • ${{video.playbackRate.toFixed(1)}}× • ${{formatTime(video.currentTime)}}`;
+    function statusText() {{
+        const state = mainVideo.paused ? "Paused" : "Playing";
+        const rate = Number.isFinite(mainVideo.playbackRate) ? mainVideo.playbackRate : 1;
+        return `${{state}} • ${{rate.toFixed(1)}}× • ${{formatTime(mainVideo.currentTime)}}`;
     }}
 
-    function updateTopStatus() {{
-        const item = players[activeIndex];
-        if (!item) return;
-        const video = item.video;
-        activeNameEl.textContent = item.angle.name;
-        playStateEl.textContent = video.paused ? "Paused" : "Playing";
-        speedStateEl.textContent = `${{video.playbackRate.toFixed(1)}}×`;
-        timeStateEl.textContent = formatTime(video.currentTime);
-        item.cardStatus.textContent = statusText(video);
+    function updateStatus() {{
+        statusEl.textContent = statusText();
     }}
 
-    function pauseOthers(exceptIndex) {{
-        players.forEach((item, index) => {{
-            if (index !== exceptIndex && !item.video.paused) {{
-                item.video.pause();
-            }}
-        }});
-    }}
-
-    function applySnapshot(target, snapshot) {{
-        const video = target.video;
-        const setTime = () => {{
-            try {{
-                const duration = Number.isFinite(video.duration) ? video.duration : null;
-                const wanted = Math.max(0, snapshot.time || 0);
-                video.currentTime = duration === null
-                    ? wanted
-                    : Math.min(wanted, Math.max(duration - 0.001, 0));
-            }} catch (_) {{}}
-
-            try {{ video.playbackRate = snapshot.rate || 1.0; }} catch (_) {{}}
-
-            if (!snapshot.paused) {{
-                const promise = video.play();
-                if (promise && typeof promise.catch === "function") {{
-                    promise.catch(() => {{}});
-                }}
-            }} else {{
-                video.pause();
-            }}
+    function snapshotState() {{
+        return {{
+            time: Number.isFinite(mainVideo.currentTime) ? mainVideo.currentTime : 0,
+            paused: mainVideo.paused,
+            rate: Number.isFinite(mainVideo.playbackRate) ? mainVideo.playbackRate : 1,
         }};
-
-        if (video.readyState >= 1) {{
-            setTime();
-        }} else {{
-            video.addEventListener("loadedmetadata", setTime, {{ once: true }});
-            video.load();
-        }}
     }}
 
-    function setActive(index, syncFromCurrent=false) {{
-        if (index < 0 || index >= players.length) return;
+    function setPreviewTime(preview) {{
+        if (!preview || !Number.isFinite(mainVideo.currentTime)) return;
+        const desired = Math.max(mainVideo.currentTime, 0);
+        const apply = () => {{
+            if (!Number.isFinite(preview.duration) || preview.duration <= 0) return;
+            preview.currentTime = Math.min(desired, Math.max(preview.duration - 0.04, 0));
+        }};
+        if (preview.readyState >= 1) apply();
+        else preview.addEventListener("loadedmetadata", apply, {{ once: true }});
+    }}
 
-        let snapshot = null;
-        if (syncFromCurrent && activeIndex >= 0 && players[activeIndex]) {{
-            const current = players[activeIndex].video;
-            snapshot = {{
-                time: current.currentTime || 0,
-                paused: current.paused,
-                rate: current.playbackRate || 1.0,
-            }};
-            current.pause();
-        }}
-
-        activeIndex = index;
-
-        players.forEach((item, i) => {{
-            item.card.classList.toggle("active", i === activeIndex);
+    function refreshButtons() {{
+        cameraStrip.querySelectorAll(".camera-btn").forEach((button, index) => {{
+            button.classList.toggle("active", index === activeIndex);
+            button.setAttribute("aria-pressed", index === activeIndex ? "true" : "false");
         }});
+    }}
 
-        if (snapshot) {{
-            pauseOthers(index);
-            applySnapshot(players[index], snapshot);
+    function loadAngle(index, preserveState=true) {{
+        if (!angles.length) return;
+        const next = ((index % angles.length) + angles.length) % angles.length;
+        if (next === activeIndex && mainVideo.src) {{
+            root.focus({{ preventScroll: true }});
+            return;
         }}
 
-        updateTopStatus();
+        const state = preserveState ? snapshotState() : {{ time: 0, paused: true, rate: 1 }};
+        activeIndex = next;
+        pendingState = state;
+
+        const angle = angles[activeIndex];
+        activeAngleEl.textContent = angle.name;
+        stageAngleEl.textContent = angle.name;
+        refreshButtons();
+
+        warningEl.innerHTML = "";
+        if (angle.sas_error) {{
+            const warning = document.createElement("div");
+            warning.className = "warning";
+            warning.textContent = `Signed URL refresh warning: ${{angle.sas_error}}`;
+            warningEl.appendChild(warning);
+        }}
+
+        measuredFrameStep = fallbackFrameStep;
+        lastFrameMediaTime = null;
+
+        mainVideo.pause();
+        mainVideo.src = angle.url;
+        mainVideo.load();
+        root.focus({{ preventScroll: true }});
+        updateStatus();
     }}
 
-    function selectRelative(delta) {{
-        if (!players.length) return;
-        const next = ((activeIndex + delta) % players.length + players.length) % players.length;
-        setActive(next, true);
-    }}
+    mainVideo.addEventListener("loadedmetadata", () => {{
+        if (!pendingState) return;
+        const state = pendingState;
+        pendingState = null;
 
-    function selectSpecial(kind) {{
-        const index = players.findIndex(item => Boolean(item.angle[kind]));
-        if (index >= 0) setActive(index, true);
-    }}
+        mainVideo.playbackRate = state.rate;
+        if (Number.isFinite(mainVideo.duration) && mainVideo.duration > 0) {{
+            mainVideo.currentTime = Math.min(
+                Math.max(state.time, 0),
+                Math.max(mainVideo.duration - 0.04, 0),
+            );
+        }}
 
-    function activeVideo() {{
-        return activeIndex >= 0 && players[activeIndex]
-            ? players[activeIndex].video
-            : null;
+        if (!state.paused) {{
+            const promise = mainVideo.play();
+            if (promise && typeof promise.catch === "function") promise.catch(() => {{}});
+        }}
+        updateStatus();
+    }});
+
+    if (typeof mainVideo.requestVideoFrameCallback === "function") {{
+        const observeFrame = (_now, metadata) => {{
+            const mediaTime = metadata && Number.isFinite(metadata.mediaTime)
+                ? metadata.mediaTime
+                : null;
+
+            if (mediaTime !== null && lastFrameMediaTime !== null) {{
+                const delta = mediaTime - lastFrameMediaTime;
+                if (delta >= 0.005 && delta <= 0.100) measuredFrameStep = delta;
+            }}
+            if (mediaTime !== null) lastFrameMediaTime = mediaTime;
+            mainVideo.requestVideoFrameCallback(observeFrame);
+        }};
+        mainVideo.requestVideoFrameCallback(observeFrame);
     }}
 
     function seekBy(seconds) {{
-        const video = activeVideo();
-        if (!video) return;
-        const maxTime = Number.isFinite(video.duration)
-            ? Math.max(video.duration - 0.001, 0)
+        if (!mainVideo.src) return;
+        const maxTime = Number.isFinite(mainVideo.duration)
+            ? Math.max(mainVideo.duration - 0.001, 0)
             : Infinity;
-        video.currentTime = Math.min(
-            Math.max((video.currentTime || 0) + seconds, 0),
+        mainVideo.currentTime = Math.min(
+            Math.max((mainVideo.currentTime || 0) + seconds, 0),
             maxTime,
         );
-        updateTopStatus();
+        updateStatus();
     }}
 
     function stepFrame(direction) {{
-        const item = players[activeIndex];
-        if (!item) return;
-        item.video.pause();
-        const step = Number.isFinite(item.frameStep) && item.frameStep > 0
-            ? item.frameStep
-            : frameStep;
+        mainVideo.pause();
+        const step = Number.isFinite(measuredFrameStep) && measuredFrameStep > 0
+            ? measuredFrameStep
+            : fallbackFrameStep;
         seekBy(direction * step);
     }}
 
     function togglePlay() {{
-        const video = activeVideo();
-        if (!video) return;
-        pauseOthers(activeIndex);
-        if (video.paused) {{
-            const promise = video.play();
-            if (promise && typeof promise.catch === "function") {{
-                promise.catch(() => {{}});
-            }}
+        if (!mainVideo.src) return;
+        if (mainVideo.paused) {{
+            const promise = mainVideo.play();
+            if (promise && typeof promise.catch === "function") promise.catch(() => {{}});
         }} else {{
-            video.pause();
+            mainVideo.pause();
         }}
-        updateTopStatus();
+        updateStatus();
     }}
 
     function setRate(rate) {{
-        const video = activeVideo();
-        if (!video) return;
-        video.playbackRate = rate;
-        updateTopStatus();
+        mainVideo.playbackRate = rate;
+        updateStatus();
+    }}
+
+    function selectSpecial(kind) {{
+        const index = angles.findIndex(angle => Boolean(angle[kind]));
+        if (index >= 0) loadAngle(index, true);
     }}
 
     async function toggleFullscreen() {{
-        const item = players[activeIndex];
-        if (!item) return;
         try {{
             if (document.fullscreenElement) {{
                 await document.exitFullscreen();
-            }} else if (item.card.requestFullscreen) {{
-                await item.card.requestFullscreen();
+            }} else if (root.requestFullscreen) {{
+                await root.requestFullscreen();
+                root.focus({{ preventScroll: true }});
             }}
         }} catch (_) {{}}
     }}
 
-    function createCard(angle, sourceIndex) {{
-        const playerIndex = players.length;
-        const card = document.createElement("div");
-        card.className = "video-card";
-        card.dataset.index = String(playerIndex);
+    function buildCameraButton(angle, index) {{
+        const wrap = document.createElement("div");
+        wrap.className = "camera-wrap";
 
-        const header = document.createElement("div");
-        header.className = "card-header";
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "camera-btn";
+        button.title = angle.name;
+        button.setAttribute("aria-label", `Load camera ${{angle.name}}`);
+        button.textContent = angle.name;
 
-        const title = document.createElement("div");
-        title.className = "angle-name";
-        title.textContent = angle.name;
-        title.title = angle.name;
-
-        const badge = document.createElement("span");
-        badge.className = "active-badge";
-        badge.textContent = "● Active";
-
-        header.appendChild(title);
-        header.appendChild(badge);
-
-        const video = document.createElement("video");
-        video.controls = true;
-        video.preload = "metadata";
-        video.playsInline = true;
-        video.src = angle.url;
-
-        const footer = document.createElement("div");
-        footer.className = "card-footer";
-
-        const cardStatus = document.createElement("div");
-        cardStatus.className = "card-status";
-        cardStatus.textContent = "Paused • 1.0× • 0:00.000";
-
-        const open = document.createElement("a");
-        open.className = "open-link";
-        open.href = angle.url;
-        open.target = "_blank";
-        open.rel = "noopener noreferrer";
-        open.textContent = "Open Video ↗";
-        open.addEventListener("click", event => event.stopPropagation());
-
-        footer.appendChild(cardStatus);
-        footer.appendChild(open);
-
-        card.appendChild(header);
-        card.appendChild(video);
-        card.appendChild(footer);
-
-        if (angle.sas_error) {{
-            const error = document.createElement("div");
-            error.className = "error";
-            error.textContent = `Signed URL refresh warning: ${{angle.sas_error}}`;
-            card.appendChild(error);
+        if (angle.is_program || angle.is_replay) {{
+            const mini = document.createElement("span");
+            mini.className = "mini";
+            mini.textContent = angle.is_program ? "PGM" : "R";
+            button.appendChild(mini);
         }}
 
-        const item = {{
-            angle,
-            card,
-            video,
-            cardStatus,
-            frameStep: frameStep,
-            lastMediaTime: null,
-            frameCallbackId: null,
-        }};
-        players.push(item);
+        const previewBox = document.createElement("div");
+        previewBox.className = "preview";
 
-        // Modern browsers expose presented-frame timestamps through
-        // requestVideoFrameCallback. Measure the source cadence while the
-        // clip plays so X/V use the real frame duration when available.
-        if (typeof video.requestVideoFrameCallback === "function") {{
-            const observeFrame = (_now, metadata) => {{
-                const mediaTime = metadata && Number.isFinite(metadata.mediaTime)
-                    ? metadata.mediaTime
-                    : null;
+        const previewVideo = document.createElement("video");
+        previewVideo.muted = true;
+        previewVideo.playsInline = true;
+        previewVideo.preload = "metadata";
 
-                if (mediaTime !== null && item.lastMediaTime !== null) {{
-                    const delta = mediaTime - item.lastMediaTime;
-                    if (delta >= 0.005 && delta <= 0.100) {{
-                        item.frameStep = delta;
-                    }}
-                }}
+        const previewLabel = document.createElement("div");
+        previewLabel.className = "preview-label";
+        const previewName = document.createElement("strong");
+        previewName.textContent = angle.name;
+        const previewHint = document.createElement("span");
+        previewHint.textContent = "preview";
+        previewLabel.appendChild(previewName);
+        previewLabel.appendChild(previewHint);
 
-                if (mediaTime !== null) item.lastMediaTime = mediaTime;
-                item.frameCallbackId = video.requestVideoFrameCallback(observeFrame);
-            }};
+        previewBox.appendChild(previewVideo);
+        previewBox.appendChild(previewLabel);
+        wrap.appendChild(button);
+        wrap.appendChild(previewBox);
+        previews.set(index, previewVideo);
 
-            item.frameCallbackId = video.requestVideoFrameCallback(observeFrame);
-        }}
-
-        const makeActive = () => {{
-            setActive(playerIndex, false);
+        const primePreview = () => {{
+            if (!previewVideo.src) {{
+                previewVideo.src = angle.url;
+                previewVideo.load();
+            }}
+            setPreviewTime(previewVideo);
         }};
 
-        card.addEventListener("pointerdown", makeActive);
-        video.addEventListener("focus", makeActive);
-        video.addEventListener("play", () => {{
-            if (activeIndex !== playerIndex) setActive(playerIndex, false);
-            pauseOthers(playerIndex);
-            updateTopStatus();
-        }});
-        video.addEventListener("pause", updateTopStatus);
-        video.addEventListener("ratechange", updateTopStatus);
-        video.addEventListener("timeupdate", () => {{
-            cardStatus.textContent = statusText(video);
-            if (activeIndex === playerIndex) updateTopStatus();
-        }});
-        video.addEventListener("loadedmetadata", () => {{
-            cardStatus.textContent = statusText(video);
-            if (activeIndex === playerIndex) updateTopStatus();
-        }});
+        wrap.addEventListener("mouseenter", primePreview);
+        button.addEventListener("focus", primePreview);
+        button.addEventListener("click", () => loadAngle(index, true));
 
-        return card;
+        return wrap;
     }}
 
-    const primaryAngles = [];
-    const secondaryAngles = [];
     angles.forEach((angle, index) => {{
-        if ((angle.is_program || angle.is_replay) && primaryAngles.length < 2) {{
-            primaryAngles.push([angle, index]);
-        }} else {{
-            secondaryAngles.push([angle, index]);
-        }}
+        cameraStrip.appendChild(buildCameraButton(angle, index));
     }});
 
-    if (primaryAngles.length === 1) primaryGrid.classList.add("one");
-    primaryAngles.forEach(([angle, index]) => primaryGrid.appendChild(createCard(angle, index)));
-
-    if (secondaryAngles.length) {{
-        secondaryBlock.style.display = "block";
-        secondaryAngles.forEach(([angle, index]) => secondaryGrid.appendChild(createCard(angle, index)));
-    }}
-
-    // If there were no PGM/Replay primary angles, put every card in the
-    // secondary grid but keep the normal player ordering.
-    if (!primaryAngles.length) {{
-        primaryGrid.style.display = "none";
-        secondaryBlock.style.display = "block";
-        secondaryGrid.innerHTML = "";
-        players.length = 0;
-        angles.forEach((angle, index) => secondaryGrid.appendChild(createCard(angle, index)));
-    }}
-
-    let initialIndex = players.findIndex(item => item.angle.is_program);
-    if (initialIndex < 0) initialIndex = players.findIndex(item => item.angle.is_replay);
+    let initialIndex = angles.findIndex(angle => angle.is_program);
+    if (initialIndex < 0) initialIndex = angles.findIndex(angle => angle.is_replay);
     if (initialIndex < 0) initialIndex = 0;
-    setActive(initialIndex, false);
+    loadAngle(initialIndex, false);
 
-    window.addEventListener("focus", () => {{
-        componentFocused = true;
-        focusNoteEl.textContent = "Shortcuts ready • click any angle to change control target.";
-    }});
-
-    window.addEventListener("blur", () => {{
-        componentFocused = false;
-        focusNoteEl.textContent = "Click a video to reactivate shortcuts.";
+    ["play", "pause", "ratechange", "timeupdate", "seeked"].forEach(eventName => {{
+        mainVideo.addEventListener(eventName, updateStatus);
     }});
 
     root.addEventListener("pointerdown", () => {{
-        componentFocused = true;
-        focusNoteEl.textContent = "Shortcuts ready • click any angle to change control target.";
+        root.focus({{ preventScroll: true }});
+        focusNoteEl.textContent = "Shortcuts active • hover a camera for preview or click it to switch.";
+    }});
+
+    document.addEventListener("fullscreenchange", () => {{
+        if (document.fullscreenElement === root) {{
+            root.focus({{ preventScroll: true }});
+            focusNoteEl.textContent = "Fullscreen shortcuts active • \\ exits fullscreen.";
+        }} else {{
+            focusNoteEl.textContent = "Shortcuts ready • \\ enters fullscreen.";
+        }}
     }});
 
     document.addEventListener("keydown", event => {{
-        const key = event.key.toLowerCase();
         const target = event.target;
         const tag = target && target.tagName ? target.tagName.toLowerCase() : "";
-        const typing = tag === "input" || tag === "textarea" || tag === "select" || (target && target.isContentEditable);
+        const typing = tag === "input" || tag === "textarea" || tag === "select" ||
+                       (target && target.isContentEditable);
         if (typing) return;
 
-        const shiftEscape = event.shiftKey && event.key === "Escape";
+        const lower = (event.key || "").toLowerCase();
+        const isFullscreenKey = event.key === "\\\\" || event.code === "Backslash";
         const mapped = new Set(["z", "x", "c", "v", "b", "d", "f", "p", "r", "1", "2", "3"]);
-        if (!shiftEscape && !mapped.has(key)) return;
+        if (!isFullscreenKey && !mapped.has(lower)) return;
 
         event.preventDefault();
         event.stopPropagation();
 
-        if (event.repeat && ["c", "d", "f", "p", "r", "1", "2", "3"].includes(key)) {{
-            return;
-        }}
+        if (event.repeat && ["c", "d", "f", "p", "r", "1", "2", "3"].includes(lower)) return;
 
-        switch (key) {{
+        switch (lower) {{
             case "z": seekBy(-5); break;
             case "x": stepFrame(-1); break;
             case "c": togglePlay(); break;
             case "v": stepFrame(1); break;
             case "b": seekBy(5); break;
-            case "d": selectRelative(-1); break;
-            case "f": selectRelative(1); break;
+            case "d": loadAngle(activeIndex - 1, true); break;
+            case "f": loadAngle(activeIndex + 1, true); break;
             case "p": selectSpecial("is_program"); break;
             case "r": selectSpecial("is_replay"); break;
             case "1": setRate(0.5); break;
             case "2": setRate(1.0); break;
             case "3": setRate(2.0); break;
             default:
-                if (shiftEscape) toggleFullscreen();
+                if (isFullscreenKey) toggleFullscreen();
         }}
     }}, true);
 
-    updateTopStatus();
+    updateStatus();
 }})();
 </script>
 </body>

@@ -2,6 +2,7 @@ import json
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from datetime import date, datetime, timedelta
 
 from services.database import get_supabase
@@ -48,6 +49,44 @@ render_page_header(
 )
 
 supabase = get_supabase()
+
+# Save & Next uses this one-rerun flag to return the browser to the newly
+# selected play's main video workspace after the database save completes.
+scroll_to_main_video_after_render = bool(
+    st.session_state.pop(
+        "editor_scroll_to_main_video",
+        False,
+    )
+)
+
+
+def scroll_parent_to_main_video():
+    """Best-effort scroll from the Streamlit component iframe to our anchor."""
+    components.html(
+        """
+        <script>
+        (() => {
+            try {
+                const doc = window.parent.document;
+                const anchor = doc.getElementById("editor-main-video-anchor");
+                if (anchor) {
+                    anchor.scrollIntoView({block: "start", behavior: "auto"});
+                    return;
+                }
+                const main = doc.querySelector('[data-testid="stMain"]')
+                    || doc.querySelector('section.main')
+                    || doc.scrollingElement;
+                if (main && typeof main.scrollTo === "function") {
+                    main.scrollTo({top: 0, behavior: "auto"});
+                }
+                window.parent.scrollTo(0, 0);
+            } catch (_) {}
+        })();
+        </script>
+        """,
+        height=0,
+        scrolling=False,
+    )
 
 
 # ============================================================
@@ -985,6 +1024,7 @@ for item in plays:
                 clean_text(item.get("score")),
                 clean_text(item.get("challenging_team")),
                 clean_text(item.get("challenge_type")),
+                clean_text(item.get("challenge_result")),
                 clean_text(item.get("crs_category")),
                 clean_text(item.get("crs_outcome")),
                 clean_text(item.get("reviewer_notes")),
@@ -1077,6 +1117,23 @@ for item in filtered_plays:
 
 match_picker_key = "editor_match_picker"
 play_picker_key = "editor_play_picker"
+filtered_play_by_id = {item["id"]: item for item in filtered_plays}
+
+# Navigation buttons cannot directly rewrite a Streamlit widget key after that
+# widget has already been instantiated in the current run. They therefore set
+# a pending play id, and the next rerun applies both dropdown values here,
+# before either selectbox is created.
+pending_play_id = st.session_state.pop(
+    "editor_pending_play_id",
+    None,
+)
+if pending_play_id in filtered_play_by_id:
+    pending_play = filtered_play_by_id[pending_play_id]
+    st.session_state[match_picker_key] = browser_match_key(
+        pending_play
+    )
+    st.session_state[play_picker_key] = pending_play_id
+    st.session_state["editor_selected_play_id"] = pending_play_id
 
 if st.session_state.get(match_picker_key) not in match_keys:
     current_id = st.session_state.get("editor_selected_play_id")
@@ -1136,18 +1193,22 @@ play = play_by_id[selected_play_id]
 play_id = play["id"]
 is_challenge = play["_queue_play_type"] == "Challenge"
 
-queue_ids = current_match_ids
-selected_index = queue_ids.index(selected_play_id)
+# The dropdown still browses Match -> Play, but Previous/Next and Save & Next
+# move through the entire filtered queue. This allows the workflow to cross a
+# match boundary instead of stopping at the final challenge in a match.
+match_selected_index = current_match_ids.index(selected_play_id)
+filtered_queue_ids = [item["id"] for item in filtered_plays]
+filtered_selected_index = filtered_queue_ids.index(selected_play_id)
 
 previous_play_id = (
-    queue_ids[selected_index - 1]
-    if selected_index > 0
+    filtered_queue_ids[filtered_selected_index - 1]
+    if filtered_selected_index > 0
     else None
 )
 
 next_play_id = (
-    queue_ids[selected_index + 1]
-    if selected_index < len(queue_ids) - 1
+    filtered_queue_ids[filtered_selected_index + 1]
+    if filtered_selected_index < len(filtered_queue_ids) - 1
     else None
 )
 
@@ -1167,7 +1228,7 @@ with st.container(border=True):
 
         identity_parts = [
             play["_queue_play_type"],
-            f"{selected_index + 1} of {len(queue_ids)} in this match",
+            f"{match_selected_index + 1} of {len(current_match_ids)} in this match",
         ]
 
         if clean_text(play.get("set_number")):
@@ -1191,6 +1252,11 @@ with st.container(border=True):
 
         detail_parts = [
             clean_text(play.get("challenge_type")),
+            (
+                f"DV Sport Result: {clean_text(play.get('challenge_result'))}"
+                if clean_text(play.get("challenge_result"))
+                else ""
+            ),
             clean_text(play.get("crs_category")),
             clean_text(play.get("crs_outcome")),
         ]
@@ -1314,6 +1380,14 @@ with info4:
 # VIDEO FOR THIS PLAY
 # ============================================================
 
+st.markdown(
+    '<div id="editor-main-video-anchor"></div>',
+    unsafe_allow_html=True,
+)
+
+if scroll_to_main_video_after_render:
+    scroll_parent_to_main_video()
+
 render_section_label(
     "Play Video"
 )
@@ -1344,15 +1418,63 @@ if not video_angles:
 
 else:
     st.caption(
-        "Click a video to make it the active shortcut angle. "
-        "Clicking an Editor field removes shortcut focus so normal typing "
-        "does not control the videos."
+        "One main player stays in control. Hover a camera button for a preview, "
+        "then click it (or use D/F/P/R) to switch angles at the same timestamp. "
+        "Press \\ to enter or exit the full video workspace."
     )
 
     render_keyboard_video_workspace(
         video_angles,
         key=f"editor_play_{play.get('id', 'unknown')}",
     )
+
+
+# ============================================================
+# DV SPORT LOGGED CHALLENGE RESULT — READ ONLY
+# ============================================================
+
+if is_challenge:
+    render_section_label(
+        "DV Sport Logged Decision"
+    )
+
+    dv_result = clean_text(
+        play.get("challenge_result")
+    )
+    dv_source_category = (
+        clean_text(play.get("dvsport_crs_category"))
+        or clean_text(play.get("challenge_type"))
+    )
+
+    with st.container(border=True):
+        result_col, type_col, team_col = st.columns(3)
+
+        with result_col:
+            st.caption("DV SPORT REVIEW RESULT")
+            if dv_result:
+                st.markdown(f"### {dv_result}")
+            else:
+                st.markdown("### Not provided")
+
+        with type_col:
+            st.caption("DV SPORT REVIEW TYPE / CRS")
+            st.write(
+                dv_source_category
+                or "—"
+            )
+
+        with team_col:
+            st.caption("CHALLENGING TEAM")
+            st.write(
+                clean_value(
+                    play.get("challenging_team")
+                )
+            )
+
+        st.caption(
+            "Read-only DV Sport source data. REVIEW RESULT is imported into "
+            "plays.challenge_result and is not changed by your VolleyReview tagging."
+        )
 
 
 # ============================================================
@@ -1917,7 +2039,7 @@ if is_challenge:
         "segmented_control",
     ):
         accuracy_choice = st.segmented_control(
-            "Was the review decision correct?",
+            "Was the DV Sport logged decision correct?",
             [
                 "Correct",
                 "Incorrect",
@@ -1939,7 +2061,7 @@ if is_challenge:
         )
 
         accuracy_choice = st.radio(
-            "Was the review decision correct?",
+            "Was the DV Sport logged decision correct?",
             [
                 "Not Tagged",
                 "Correct",
@@ -2422,13 +2544,20 @@ def move_to_play(target_play_id):
     if target_play_id is None:
         return
 
-    st.session_state[
-        "editor_selected_play_id"
-    ] = target_play_id
+    target_play = filtered_play_by_id.get(
+        target_play_id
+    )
+    if target_play is None:
+        return
 
+    # Defer changes to the two selectbox widget keys until the next rerun,
+    # where they are applied before the widgets are instantiated.
     st.session_state[
-        "editor_play_picker"
+        "editor_pending_play_id"
     ] = target_play_id
+    st.session_state[
+        "editor_scroll_to_main_video"
+    ] = True
 
 
 nav1, save1, save2, nav2 = st.columns(
@@ -2472,7 +2601,7 @@ with save2:
         ),
         help=(
             "Save this review and immediately open the next play "
-            "in the selected match."
+            "in the current filtered list, even when it is in the next match."
         ),
     )
 
