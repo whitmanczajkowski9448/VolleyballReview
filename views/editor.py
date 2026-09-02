@@ -1718,699 +1718,625 @@ initialize(
 
 
 # ============================================================
-# CRS CLASSIFICATION — CHALLENGES ONLY
+# FAST TAGGING FORM
 # ============================================================
-
-if is_challenge:
-    render_section_label(
-        "NCAA Challenge Classification"
-    )
-
-    dvsport_crs = (
-        clean_text(
-            play.get("dvsport_crs_category")
-        )
-        or clean_text(
-            play.get("challenge_type")
-        )
-    )
-
-    st.text_input(
-        "DV Sport CRS / Source Category",
-        value=dvsport_crs,
-        disabled=True,
-        help=(
-            "Imported source metadata from DV Sport. "
-            "This field is not changed by reviewer tagging."
-        ),
-    )
-
-    category = st.selectbox(
-        "NCAA Challenge Category",
-        CRS_CATEGORIES,
-        key=category_key,
-    )
-
-    if (
-        category
-        == "Ball contacting a player"
-    ):
-        touch_context = st.selectbox(
-            "Touch Context",
-            TOUCH_CONTEXTS,
-            key=touch_key,
-        )
-    else:
-        touch_context = ""
-
-    decision_options = (
-        ORIGINAL_DECISIONS.get(
-            category,
-            [""],
-        )
-    )
-
-    if (
-        st.session_state[
-            decision_key
-        ]
-        not in decision_options
-    ):
-        st.session_state[
-            decision_key
-        ] = ""
-
-    original_decision = st.selectbox(
-        "Original Fault Decision",
-        decision_options,
-        key=decision_key,
-    )
-
-    challenge_outcome = st.selectbox(
-        "Challenge Outcome",
-        CRS_OUTCOMES,
-        key=outcome_key,
-    )
-
-    changed_options = [
-        "Not entered",
-        "Yes",
-        "No",
-    ]
-
-    existing_changed = (
-        st.session_state[
-            changed_key
-        ]
-    )
-
-    if existing_changed is True:
-        changed_default = "Yes"
-    elif existing_changed is False:
-        changed_default = "No"
-    else:
-        changed_default = (
-            "Not entered"
-        )
-
-    changed_display_key = (
-        f"changed_display_{play_id}"
-    )
-
-    initialize(
-        changed_display_key,
-        changed_default,
-    )
-
-    changed_display = st.radio(
-        "Original Fault Decision Changed?",
-        changed_options,
-        horizontal=True,
-        key=changed_display_key,
-    )
-
-    if changed_display == "Yes":
-        original_fault_changed = True
-    elif changed_display == "No":
-        original_fault_changed = False
-    else:
-        original_fault_changed = None
-
-    imported_length_seconds = (
-        play.get(
-            "challenge_length_seconds"
-        )
-    )
-
-    if imported_length_seconds is not None:
-        challenge_length = (
-            seconds_to_time(
-                imported_length_seconds
-            )
-        )
-
-        st.text_input(
-            "Length of Challenge",
-            value=challenge_length,
-            disabled=True,
-            help=(
-                "Imported automatically from "
-                "DV Sport REVIEW TIME."
-            ),
-        )
-
-        st.caption(
-            "DV Sport source • read only"
-        )
-
-        current_length_seconds = int(
-            imported_length_seconds
-        )
-
-    else:
-        challenge_length = st.text_input(
-            "Length of Challenge",
-            key=length_key,
-            placeholder="Example: 1:24",
-            help=(
-                "DV Sport did not provide REVIEW TIME "
-                "for this challenge."
-            ),
-        )
-
-        current_length_seconds = (
-            parse_time_to_seconds(
-                challenge_length
-            )
-        )
-
-else:
-    # POIs and FAULTS do not use challenge-only NCAA outcome fields.
-    category = play.get(
-        "crs_category"
-    ) or ""
-
-    touch_context = play.get(
-        "crs_touch_context"
-    ) or ""
-
-    original_decision = play.get(
-        "crs_original_decision"
-    ) or ""
-
-    challenge_outcome = play.get(
-        "crs_outcome"
-    ) or ""
-
-    original_fault_changed = play.get(
-        "crs_original_fault_changed"
-    )
-
-    current_length_seconds = play.get(
-        "challenge_length_seconds"
-    )
-
-
-# ============================================================
-# ============================================================
-# PLAY CLASSIFICATION — ALL PLAY TYPES
-# ============================================================
-
-render_section_label(
-    "Play Classification"
-)
-
-play_classification = st.selectbox(
-    "Play / Fault Category",
-    PLAY_CATEGORIES,
-    key=play_category_key,
-    help=(
-        "Reviewer-controlled volleyball classification. "
-        "Available for Challenges, POIs, and imported FAULTS."
-    ),
-)
-
-if play_classification == "Other":
-    play_classification_other = st.text_input(
-        "Other Play Category",
-        key=play_category_other_key,
-        placeholder="Enter a short custom play/fault category",
-    )
-else:
-    play_classification_other = ""
-
-is_starred = st.checkbox(
-    "★ Star this play",
-    key=starred_key,
-    help=(
-        "Favorite this Challenge, POI, or FAULT so it can be "
-        "quickly filtered and found later."
-    ),
-)
-
-dvsport_play_category = clean_text(
-    play.get("dvsport_play_category")
-)
-
-if dvsport_play_category:
-    st.caption(
-        f"DV Sport source category: {dvsport_play_category}"
-    )
-
-
-# RECORD USE — CHALLENGES ONLY
-# ============================================================
-
-if is_challenge:
-    render_section_label(
-        "Record Use"
-    )
-
-    is_unusable = st.checkbox(
-        "Mark this challenge unusable",
-        key=unusable_key,
-        help=(
-            "The record stays in the database and remains viewable, "
-            "editable, downloadable, and emailable, but is excluded "
-            "from all dashboard analysis and coordinator reports."
-        ),
-    )
-
-    if is_unusable:
-        st.warning(
-            (
-                "This challenge is excluded from all analysis "
-                "and reports after you save."
-            ),
-            icon="⚠️",
-        )
-
-        unusable_reason = st.selectbox(
-            "Reason",
-            ['Technical Difficulty', 'Video / Media Unusable', 'Incomplete / Incorrect Record', 'Duplicate Record', 'Other / Not Usable'],
-            key=unusable_reason_key,
-        )
-
-        unusable_notes = st.text_input(
-            "Unusable Details",
-            key=unusable_notes_key,
-            placeholder=(
-                "Optional: brief explanation of the technical issue "
-                "or why this challenge should not be used"
-            ),
-        )
-
-    else:
-        unusable_reason = None
-        unusable_notes = None
-
-else:
-    is_unusable = bool(
-        play.get(
-            "is_unusable"
-        )
-    )
-    unusable_reason = play.get(
-        "unusable_reason"
-    )
-    unusable_notes = play.get(
-        "unusable_notes"
-    )
-
-
-# ============================================================
-# RAPID REVIEW TAGS — CHALLENGES ONLY
-# ============================================================
-
-if is_challenge:
-    render_section_label(
-        "Rapid Review Tags"
-    )
-
-    st.caption(
-        (
-            "Quick post-match tags for review quality, "
-            "training use, and who was involved."
-        )
-    )
-
-    if hasattr(
-        st,
-        "segmented_control",
-    ):
-        accuracy_choice = st.segmented_control(
-            "Was the DV Sport logged decision correct?",
-            [
-                "Correct",
-                "Incorrect",
-            ],
-            key=accuracy_key,
-            selection_mode="single",
-        )
-    else:
-        fallback_key = (
-            f"{accuracy_key}_fallback"
-        )
-
-        initialize(
-            fallback_key,
-            st.session_state.get(
-                accuracy_key
-            )
-            or "Not Tagged",
-        )
-
-        accuracy_choice = st.radio(
-            "Was the DV Sport logged decision correct?",
-            [
-                "Not Tagged",
-                "Correct",
-                "Incorrect",
-            ],
-            horizontal=True,
-            key=fallback_key,
-        )
-
-    if accuracy_choice == "Correct":
-        review_decision_correct = True
-    elif accuracy_choice == "Incorrect":
-        review_decision_correct = False
-    else:
-        review_decision_correct = None
-
-    use_for_training = st.checkbox(
-        "Mark for use in training",
-        key=training_key,
-        help=(
-            "Marks this challenge so it can be filtered "
-            "and collected for training later."
-        ),
-    )
-
-    st.markdown(
-        "**Who was involved in the play?**"
-    )
-
-    if hasattr(
-        st,
-        "pills",
-    ):
-        involved_roles = st.pills(
-            "Involved Roles",
-            INVOLVED_ROLE_OPTIONS,
-            selection_mode="multi",
-            key=involved_roles_key,
-            label_visibility="collapsed",
-        )
-
-        involved_roles = (
-            involved_roles
-            or []
-        )
-
-    else:
-        involved_roles = []
-        existing_roles = set(
-            st.session_state.get(
-                involved_roles_key,
-                []
-            )
-        )
-
-        role_columns = st.columns(4)
-
-        for role_index, role in enumerate(
-            INVOLVED_ROLE_OPTIONS
-        ):
-            role_key = (
-                f"{involved_roles_key}_"
-                f"{role_index}"
-            )
-
-            with role_columns[
-                role_index % 4
-            ]:
-                role_checked = st.checkbox(
-                    role,
-                    value=(
-                        role in existing_roles
-                    ),
-                    key=role_key,
-                )
-
-            if role_checked:
-                involved_roles.append(role)
-
-    involved_people = st.text_input(
-        "Names / Details",
-        key=involved_people_key,
-        placeholder=(
-            "Optional: player number/name, official name, "
-            "or another identifying detail"
-        ),
-    )
-
-else:
-    review_decision_correct = play.get(
-        "review_decision_correct"
-    )
-    use_for_training = bool(
-        play.get(
-            "use_for_training"
-        )
-    )
-    involved_roles = involved_roles_list(
-        play.get(
-            "involved_roles"
-        )
-    )
-    involved_people = (
-        play.get(
-            "involved_people"
-        )
-        or ""
-    )
-
-
-# ============================================================
-# NOTES
-# ============================================================
-
-render_section_label(
-    "Reviewer Notes"
-)
-
-reviewer_notes = st.text_area(
-    "General Reviewer Notes",
-    key=notes_key,
-    height=120,
-)
-
-weekly_summary_note = st.text_area(
-    "Special Weekly Summary Note",
-    key=weekly_key,
-    height=100,
-    help=(
-        "Use this when you specifically want "
-        "this play highlighted in the Monday report."
-    ),
-)
-
-
-# ============================================================
-# REVIEW WORKFLOW
-# ============================================================
-
-render_section_label(
-    "Review Workflow"
-)
-
-review_status = st.radio(
-    "Review Status",
-    REVIEW_STATUSES,
-    horizontal=True,
-    key=status_key,
-)
-
-
-# ============================================================
-# DETECT CHANGES
-# ============================================================
-
-original_values = {
-    "ncaa_challenge_category":
-        play.get("ncaa_challenge_category")
-        or play.get("crs_category")
-        or "",
-
-    "play_category":
-        play.get("play_category")
-        or "",
-
-    "play_category_other":
-        play.get("play_category_other")
-        or "",
-
-    "is_starred":
-        bool(
-            play.get("is_starred")
-        ),
-
-    "crs_touch_context":
-        play.get(
-            "crs_touch_context"
-        )
-        or "",
-
-    "crs_original_decision":
-        play.get(
-            "crs_original_decision"
-        )
-        or "",
-
-    "crs_outcome":
-        play.get("crs_outcome")
-        or "",
-
-    "crs_original_fault_changed":
-        play.get(
-            "crs_original_fault_changed"
-        ),
-
-    "challenge_length_seconds":
-        play.get(
-            "challenge_length_seconds"
-        ),
-
-    "is_unusable":
-        bool(
-            play.get(
-                "is_unusable"
-            )
-        ),
-
-    "unusable_reason":
-        play.get(
-            "unusable_reason"
-        ),
-
-    "unusable_notes":
-        play.get(
-            "unusable_notes"
-        ),
-
-    "review_decision_correct":
-        play.get(
-            "review_decision_correct"
-        ),
-
-    "use_for_training":
-        bool(
-            play.get(
-                "use_for_training"
-            )
-        ),
-
-    "involved_roles":
-        involved_roles_list(
-            play.get(
-                "involved_roles"
-            )
-        ),
-
-    "involved_people":
-        play.get(
-            "involved_people"
-        )
-        or "",
-
-    "reviewer_notes":
-        play.get("reviewer_notes")
-        or "",
-
-    "weekly_summary_note":
-        play.get(
-            "weekly_summary_note"
-        )
-        or "",
-
-    "review_status":
-        play.get("review_status")
-        or "Not Viewed",
-}
-
-
-current_values = {
-    "ncaa_challenge_category":
-        category,
-
-    "play_category":
-        play_classification,
-
-    "play_category_other":
-        play_classification_other,
-
-    "is_starred":
-        is_starred,
-
-    "crs_touch_context":
-        touch_context,
-
-    "crs_original_decision":
-        original_decision,
-
-    "crs_outcome":
-        challenge_outcome,
-
-    "crs_original_fault_changed":
-        original_fault_changed,
-
-    "challenge_length_seconds":
-        current_length_seconds,
-
-    "is_unusable":
-        is_unusable,
-
-    "unusable_reason":
-        unusable_reason,
-
-    "unusable_notes":
-        unusable_notes,
-
-    "review_decision_correct":
-        review_decision_correct,
-
-    "use_for_training":
-        use_for_training,
-
-    "involved_roles":
-        involved_roles,
-
-    "involved_people":
-        involved_people,
-
-    "reviewer_notes":
-        reviewer_notes,
-
-    "weekly_summary_note":
-        weekly_summary_note,
-
-    "review_status":
-        review_status,
-}
-
-
-has_unsaved_changes = (
-    original_values
-    != current_values
-)
-
+#
+# IMPORTANT STREAMLIT BEHAVIOR:
+# Normal Streamlit widgets rerun the entire script on every click.  All
+# reviewer-controlled fields below therefore live in ONE form.  The browser
+# keeps those edits locally until one of the form submit buttons is pressed.
+# Only Save Review / Save & Previous / Save & Next writes to Supabase.
+#
+# Because form widgets intentionally do not rerun while they are being edited,
+# fields that used to appear/disappear based on another selection remain
+# visible.  save_current_review() applies the dependencies when building the
+# database payload (for example Other Play Category and unusable details).
 
 save_message_key = (
     f"save_message_{play_id}"
 )
 
-if has_unsaved_changes:
-    st.warning(
-        (
-            "● Unsaved changes — click Save Review "
-            "before leaving this play."
-        )
+saved_message = st.session_state.get(
+    save_message_key
+)
+
+if saved_message:
+    st.success(saved_message)
+
+st.info(
+    (
+        "⚡ Fast Tag Mode — make all of your selections below without waiting. "
+        "Nothing is written to the database until you click Save Review, "
+        "Save & Previous, or Save & Next."
     )
-else:
-    saved_message = (
-        st.session_state.get(
-            save_message_key
+)
+
+# Keep widget state valid before the form is instantiated.
+if st.session_state.get(category_key) not in CRS_CATEGORIES:
+    st.session_state[category_key] = ""
+
+if st.session_state.get(play_category_key) not in PLAY_CATEGORIES:
+    st.session_state[play_category_key] = ""
+
+if st.session_state.get(status_key) not in REVIEW_STATUSES:
+    st.session_state[status_key] = "Not Viewed"
+
+# A form cannot rerun midway through tagging, so Original Fault Decision cannot
+# dynamically swap its option list when NCAA Challenge Category changes. Build
+# one de-duplicated master list instead. The selected category is still stored
+# separately and provides the context for the decision.
+all_decision_options = [""]
+for option_group in ORIGINAL_DECISIONS.values():
+    for option in option_group:
+        option = clean_text(option)
+        if option and option not in all_decision_options:
+            all_decision_options.append(option)
+
+existing_decision = clean_text(
+    st.session_state.get(decision_key)
+)
+if existing_decision and existing_decision not in all_decision_options:
+    all_decision_options.append(existing_decision)
+
+with st.form(
+    key=f"review_form_{play_id}",
+    clear_on_submit=False,
+    border=False,
+):
+
+    # ========================================================
+    # CRS CLASSIFICATION — CHALLENGES ONLY
+    # ========================================================
+
+    if is_challenge:
+        render_section_label(
+            "NCAA Challenge Classification"
+        )
+
+        dvsport_crs = (
+            clean_text(
+                play.get("dvsport_crs_category")
+            )
+            or clean_text(
+                play.get("challenge_type")
+            )
+        )
+
+        st.text_input(
+            "DV Sport CRS / Source Category",
+            value=dvsport_crs,
+            disabled=True,
+            help=(
+                "Imported source metadata from DV Sport. "
+                "This field is not changed by reviewer tagging."
+            ),
+        )
+
+        class_col1, class_col2 = st.columns(2)
+
+        with class_col1:
+            category = st.selectbox(
+                "NCAA Challenge Category",
+                CRS_CATEGORIES,
+                key=category_key,
+            )
+
+        with class_col2:
+            touch_context = st.selectbox(
+                "Touch Context (if applicable)",
+                TOUCH_CONTEXTS,
+                key=touch_key,
+                help=(
+                    "Used for touch/contact challenge categories. "
+                    "It will be ignored when it does not apply."
+                ),
+            )
+
+        decision_col1, decision_col2 = st.columns(2)
+
+        with decision_col1:
+            original_decision = st.selectbox(
+                "Original Fault Decision",
+                all_decision_options,
+                key=decision_key,
+                help=(
+                    "Choose the original on-court decision. "
+                    "The full list stays available so changing the category "
+                    "does not force a page reload."
+                ),
+            )
+
+        with decision_col2:
+            challenge_outcome = st.selectbox(
+                "Challenge Outcome",
+                CRS_OUTCOMES,
+                key=outcome_key,
+            )
+
+        changed_options = [
+            "Not entered",
+            "Yes",
+            "No",
+        ]
+
+        existing_changed = (
+            st.session_state[
+                changed_key
+            ]
+        )
+
+        if existing_changed is True:
+            changed_default = "Yes"
+        elif existing_changed is False:
+            changed_default = "No"
+        else:
+            changed_default = "Not entered"
+
+        changed_display_key = (
+            f"changed_display_{play_id}"
+        )
+
+        initialize(
+            changed_display_key,
+            changed_default,
+        )
+
+        changed_display = st.radio(
+            "Original Fault Decision Changed?",
+            changed_options,
+            horizontal=True,
+            key=changed_display_key,
+        )
+
+        if changed_display == "Yes":
+            original_fault_changed = True
+        elif changed_display == "No":
+            original_fault_changed = False
+        else:
+            original_fault_changed = None
+
+        imported_length_seconds = (
+            play.get(
+                "challenge_length_seconds"
+            )
+        )
+
+        if imported_length_seconds is not None:
+            challenge_length = (
+                seconds_to_time(
+                    imported_length_seconds
+                )
+            )
+
+            st.text_input(
+                "Length of Challenge",
+                value=challenge_length,
+                disabled=True,
+                help=(
+                    "Imported automatically from "
+                    "DV Sport REVIEW TIME."
+                ),
+            )
+
+            st.caption(
+                "DV Sport source • read only"
+            )
+
+            current_length_seconds = int(
+                imported_length_seconds
+            )
+
+        else:
+            challenge_length = st.text_input(
+                "Length of Challenge",
+                key=length_key,
+                placeholder="Example: 1:24",
+                help=(
+                    "DV Sport did not provide REVIEW TIME "
+                    "for this challenge."
+                ),
+            )
+
+            current_length_seconds = (
+                parse_time_to_seconds(
+                    challenge_length
+                )
+            )
+
+    else:
+        # POIs and FAULTS do not use challenge-only NCAA outcome fields.
+        category = play.get(
+            "crs_category"
+        ) or ""
+
+        touch_context = play.get(
+            "crs_touch_context"
+        ) or ""
+
+        original_decision = play.get(
+            "crs_original_decision"
+        ) or ""
+
+        challenge_outcome = play.get(
+            "crs_outcome"
+        ) or ""
+
+        original_fault_changed = play.get(
+            "crs_original_fault_changed"
+        )
+
+        challenge_length = ""
+        current_length_seconds = play.get(
+            "challenge_length_seconds"
+        )
+
+
+    # ========================================================
+    # PLAY CLASSIFICATION — ALL PLAY TYPES
+    # ========================================================
+
+    render_section_label(
+        "Play Classification"
+    )
+
+    play_col1, play_col2 = st.columns(2)
+
+    with play_col1:
+        play_classification = st.selectbox(
+            "Play / Fault Category",
+            PLAY_CATEGORIES,
+            key=play_category_key,
+            help=(
+                "Reviewer-controlled volleyball classification. "
+                "Available for Challenges, POIs, and imported FAULTS."
+            ),
+        )
+
+    with play_col2:
+        # Always visible in Fast Tag Mode. It is only written when Other is
+        # selected, which avoids a rerun just to reveal this field.
+        play_classification_other_input = st.text_input(
+            "Other Play Category (if applicable)",
+            key=play_category_other_key,
+            placeholder="Only used when Play / Fault Category = Other",
+        )
+
+    play_classification_other = (
+        play_classification_other_input
+        if play_classification == "Other"
+        else ""
+    )
+
+    is_starred = st.checkbox(
+        "★ Star this play",
+        key=starred_key,
+        help=(
+            "Favorite this Challenge, POI, or FAULT so it can be "
+            "quickly filtered and found later."
+        ),
+    )
+
+    dvsport_play_category = clean_text(
+        play.get("dvsport_play_category")
+    )
+
+    if dvsport_play_category:
+        st.caption(
+            f"DV Sport source category: {dvsport_play_category}"
+        )
+
+
+    # ========================================================
+    # RECORD USE — CHALLENGES ONLY
+    # ========================================================
+
+    if is_challenge:
+        render_section_label(
+            "Record Use"
+        )
+
+        is_unusable = st.checkbox(
+            "Mark this challenge unusable",
+            key=unusable_key,
+            help=(
+                "The record stays in the database and remains viewable, "
+                "editable, downloadable, and emailable, but is excluded "
+                "from all dashboard analysis and coordinator reports."
+            ),
+        )
+
+        unusable_col1, unusable_col2 = st.columns(2)
+
+        with unusable_col1:
+            unusable_reason_input = st.selectbox(
+                "Unusable Reason (only used when marked unusable)",
+                [
+                    "Technical Difficulty",
+                    "Video / Media Unusable",
+                    "Incomplete / Incorrect Record",
+                    "Duplicate Record",
+                    "Other / Not Usable",
+                ],
+                key=unusable_reason_key,
+            )
+
+        with unusable_col2:
+            unusable_notes_input = st.text_input(
+                "Unusable Details (optional)",
+                key=unusable_notes_key,
+                placeholder="Only saved when challenge is marked unusable",
+            )
+
+        unusable_reason = (
+            unusable_reason_input
+            if is_unusable
+            else None
+        )
+
+        unusable_notes = (
+            unusable_notes_input
+            if is_unusable
+            else None
+        )
+
+    else:
+        is_unusable = bool(
+            play.get(
+                "is_unusable"
+            )
+        )
+        unusable_reason = play.get(
+            "unusable_reason"
+        )
+        unusable_notes = play.get(
+            "unusable_notes"
+        )
+
+
+    # ========================================================
+    # RAPID REVIEW TAGS — CHALLENGES ONLY
+    # ========================================================
+
+    if is_challenge:
+        render_section_label(
+            "Rapid Review Tags"
+        )
+
+        st.caption(
+            (
+                "These controls are batched locally. Click as quickly as you "
+                "want; the database is not touched until you submit the form."
+            )
+        )
+
+        rapid_col1, rapid_col2 = st.columns(2)
+
+        with rapid_col1:
+            if hasattr(
+                st,
+                "segmented_control",
+            ):
+                accuracy_choice = st.segmented_control(
+                    "Was the DV Sport logged decision correct?",
+                    [
+                        "Correct",
+                        "Incorrect",
+                    ],
+                    key=accuracy_key,
+                    selection_mode="single",
+                )
+            else:
+                fallback_key = (
+                    f"{accuracy_key}_fallback"
+                )
+
+                initialize(
+                    fallback_key,
+                    st.session_state.get(
+                        accuracy_key
+                    )
+                    or "Not Tagged",
+                )
+
+                accuracy_choice = st.radio(
+                    "Was the DV Sport logged decision correct?",
+                    [
+                        "Not Tagged",
+                        "Correct",
+                        "Incorrect",
+                    ],
+                    horizontal=True,
+                    key=fallback_key,
+                )
+
+        with rapid_col2:
+            use_for_training = st.checkbox(
+                "Mark for use in training",
+                key=training_key,
+                help=(
+                    "Marks this challenge so it can be filtered "
+                    "and collected for training later."
+                ),
+            )
+
+        if accuracy_choice == "Correct":
+            review_decision_correct = True
+        elif accuracy_choice == "Incorrect":
+            review_decision_correct = False
+        else:
+            review_decision_correct = None
+
+        st.markdown(
+            "**Who was involved in the play?**"
+        )
+
+        if hasattr(
+            st,
+            "pills",
+        ):
+            involved_roles = st.pills(
+                "Involved Roles",
+                INVOLVED_ROLE_OPTIONS,
+                selection_mode="multi",
+                key=involved_roles_key,
+                label_visibility="collapsed",
+            )
+
+            involved_roles = (
+                involved_roles
+                or []
+            )
+
+        else:
+            involved_roles = []
+            existing_roles = set(
+                st.session_state.get(
+                    involved_roles_key,
+                    [],
+                )
+            )
+
+            role_columns = st.columns(4)
+
+            for role_index, role in enumerate(
+                INVOLVED_ROLE_OPTIONS
+            ):
+                role_key = (
+                    f"{involved_roles_key}_"
+                    f"{role_index}"
+                )
+
+                with role_columns[
+                    role_index % 4
+                ]:
+                    role_checked = st.checkbox(
+                        role,
+                        value=(
+                            role in existing_roles
+                        ),
+                        key=role_key,
+                    )
+
+                if role_checked:
+                    involved_roles.append(role)
+
+        involved_people = st.text_input(
+            "Names / Details",
+            key=involved_people_key,
+            placeholder=(
+                "Optional: player number/name, official name, "
+                "or another identifying detail"
+            ),
+        )
+
+    else:
+        review_decision_correct = play.get(
+            "review_decision_correct"
+        )
+        use_for_training = bool(
+            play.get(
+                "use_for_training"
+            )
+        )
+        involved_roles = involved_roles_list(
+            play.get(
+                "involved_roles"
+            )
+        )
+        involved_people = (
+            play.get(
+                "involved_people"
+            )
+            or ""
+        )
+
+
+    # ========================================================
+    # NOTES
+    # ========================================================
+
+    render_section_label(
+        "Reviewer Notes"
+    )
+
+    reviewer_notes = st.text_area(
+        "General Reviewer Notes",
+        key=notes_key,
+        height=120,
+    )
+
+    weekly_summary_note = st.text_area(
+        "Special Weekly Summary Note",
+        key=weekly_key,
+        height=100,
+        help=(
+            "Use this when you specifically want "
+            "this play highlighted in the Monday report."
+        ),
+    )
+
+
+    # ========================================================
+    # REVIEW WORKFLOW
+    # ========================================================
+
+    render_section_label(
+        "Review Workflow"
+    )
+
+    review_status = st.radio(
+        "Review Status",
+        REVIEW_STATUSES,
+        horizontal=True,
+        key=status_key,
+    )
+
+    st.caption(
+        (
+            "Changes above are still unsaved. Submitting one of the buttons "
+            "below performs the only database write for this review."
         )
     )
 
-    if saved_message:
-        st.success(
-            saved_message
+    submit1, submit2, submit3 = st.columns(
+        [
+            1.15,
+            1.25,
+            1.45,
+        ]
+    )
+
+    with submit1:
+        save_previous_clicked = st.form_submit_button(
+            "← Save & Previous",
+            use_container_width=True,
+            disabled=(
+                previous_play_id is None
+            ),
+            help=(
+                "Save this review and open the previous play in the current "
+                "filtered list."
+            ),
         )
-    else:
-        st.success(
-            "✓ All changes saved"
+
+    with submit2:
+        save_clicked = st.form_submit_button(
+            "Save Review",
+            use_container_width=True,
+        )
+
+    with submit3:
+        save_next_clicked = st.form_submit_button(
+            "Save & Next →",
+            type="primary",
+            use_container_width=True,
+            disabled=(
+                next_play_id is None
+            ),
+            help=(
+                "Save this review and immediately open the next play in the "
+                "current filtered list, even when it is in the next match."
+            ),
         )
 
 
@@ -2426,9 +2352,7 @@ def save_current_review():
         )
         is None
         and clean_text(
-            st.session_state.get(
-                length_key
-            )
+            challenge_length
         )
         and current_length_seconds
         is None
@@ -2440,6 +2364,20 @@ def save_current_review():
             )
         )
         return False
+
+    # Touch Context only applies to touch/contact challenges. Keeping its widget
+    # visible avoids a form rerun, but irrelevant values are not stored.
+    touch_category_names = {
+        "Ball contact / touch",
+        "Ball contacting a player",
+        "Touch / no touch",
+    }
+
+    touch_context_to_save = (
+        touch_context
+        if category in touch_category_names
+        else None
+    )
 
     update_data = {
         "ncaa_challenge_category":
@@ -2458,8 +2396,7 @@ def save_current_review():
             is_starred,
 
         "crs_touch_context":
-            touch_context
-            or None,
+            touch_context_to_save,
 
         "crs_original_decision":
             original_decision,
@@ -2550,8 +2487,8 @@ def move_to_play(target_play_id):
     if target_play is None:
         return
 
-    # Defer changes to the two selectbox widget keys until the next rerun,
-    # where they are applied before the widgets are instantiated.
+    # Defer changes to the Match and Play selectbox keys until the next rerun,
+    # where they are applied before those widgets are instantiated.
     st.session_state[
         "editor_pending_play_id"
     ] = target_play_id
@@ -2560,79 +2497,14 @@ def move_to_play(target_play_id):
     ] = True
 
 
-nav1, save1, save2, nav2 = st.columns(
-    [
-        1.0,
-        1.35,
-        1.55,
-        1.0,
-    ]
-)
+if save_previous_clicked:
+    target_id = previous_play_id
 
-with nav1:
-    previous_clicked = st.button(
-        "← Previous",
-        use_container_width=True,
-        disabled=(
-            previous_play_id is None
-            or has_unsaved_changes
-        ),
-        help=(
-            "Save or discard current changes before moving."
-            if has_unsaved_changes
-            else None
-        ),
-    )
-
-with save1:
-    save_clicked = st.button(
-        "Save Review",
-        type="primary",
-        use_container_width=True,
-    )
-
-with save2:
-    save_next_clicked = st.button(
-        "Save & Next →",
-        type="primary",
-        use_container_width=True,
-        disabled=(
-            next_play_id is None
-        ),
-        help=(
-            "Save this review and immediately open the next play "
-            "in the current filtered list, even when it is in the next match."
-        ),
-    )
-
-with nav2:
-    next_clicked = st.button(
-        "Next →",
-        use_container_width=True,
-        disabled=(
-            next_play_id is None
-            or has_unsaved_changes
-        ),
-        help=(
-            "Save or discard current changes before moving."
-            if has_unsaved_changes
-            else None
-        ),
-    )
-
-
-if previous_clicked:
-    move_to_play(
-        previous_play_id
-    )
-    st.rerun()
-
-
-if next_clicked:
-    move_to_play(
-        next_play_id
-    )
-    st.rerun()
+    if save_current_review():
+        move_to_play(
+            target_id
+        )
+        st.rerun()
 
 
 if save_clicked:
@@ -2648,3 +2520,4 @@ if save_next_clicked:
             target_id
         )
         st.rerun()
+

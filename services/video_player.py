@@ -79,9 +79,10 @@ def render_keyboard_video_workspace(
     speed. Fullscreen is applied to the entire workspace—not the native video
     element—so camera buttons and keyboard listeners remain available.
 
-    Hovering a camera button lazily loads a muted preview at approximately the
-    main player's current timestamp. Clicking the button makes that angle the
-    active source in the main player.
+    Program/PGM and Replay Output are background-buffered immediately and kept
+    as persistent resident video elements so their browser buffers survive angle
+    switches. Other cameras are metadata-preloaded and promoted to full buffering
+    when hovered or selected. Hover previews seek near the active timestamp.
     """
     usable = []
 
@@ -260,15 +261,30 @@ def render_keyboard_video_workspace(
         border-color: rgba(104,216,255,.60);
     }}
 
-    .main-stage video {{
+    #video-stack {{
         width: 100%;
-        display: block;
+        min-height: 0;
+    }}
+
+    .resident-video {{
+        width: 100%;
+        display: none;
         aspect-ratio: 16 / 9;
         background: #000;
         max-height: 68vh;
     }}
 
-    #vr-{safe_title}:fullscreen .main-stage video {{
+    .resident-video.active {{
+        display: block;
+    }}
+
+    #vr-{safe_title}:fullscreen #video-stack {{
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+    }}
+
+    #vr-{safe_title}:fullscreen .resident-video.active {{
         width: 100%;
         height: 100%;
         max-height: none;
@@ -503,12 +519,12 @@ def render_keyboard_video_workspace(
 
     <div class="main-stage" id="main-stage">
         <div class="stage-badge">● ACTIVE &nbsp;<span id="stage-angle">—</span></div>
-        <video id="main-video" controls preload="metadata" playsinline></video>
+        <div id="video-stack"></div>
     </div>
 
     <div class="camera-title">
         <strong>Camera Angles</strong>
-        <span>Hover for a preview • click to load in the main player</span>
+        <span id="buffer-status">Background buffering priority: Program • Replay Output</span>
     </div>
     <div class="camera-strip" id="camera-strip"></div>
     <div id="url-warning"></div>
@@ -533,21 +549,31 @@ def render_keyboard_video_workspace(
 <script>
 (() => {{
     const root = document.getElementById("vr-{safe_title}");
-    const mainVideo = document.getElementById("main-video");
+    const videoStack = document.getElementById("video-stack");
     const cameraStrip = document.getElementById("camera-strip");
     const activeAngleEl = document.getElementById("active-angle");
     const stageAngleEl = document.getElementById("stage-angle");
     const statusEl = document.getElementById("play-status");
     const focusNoteEl = document.getElementById("focus-note");
     const warningEl = document.getElementById("url-warning");
+    const bufferStatusEl = document.getElementById("buffer-status");
     const angles = {angle_json};
     const fallbackFrameStep = {frame_step:.12f};
 
     let activeIndex = -1;
-    let measuredFrameStep = fallbackFrameStep;
-    let lastFrameMediaTime = null;
-    let pendingState = null;
+    let lastStandbyPrimeTime = -999;
+    const residentVideos = [];
+    const frameSteps = [];
+    const lastFrameTimes = [];
     const previews = new Map();
+
+    const priorityIndexes = angles
+        .map((angle, index) => (angle.is_program || angle.is_replay) ? index : -1)
+        .filter(index => index >= 0);
+
+    function activeVideo() {{
+        return activeIndex >= 0 ? residentVideos[activeIndex] : null;
+    }}
 
     function formatTime(value) {{
         const seconds = Number.isFinite(value) ? Math.max(value, 0) : 0;
@@ -556,27 +582,125 @@ def render_keyboard_video_workspace(
         return `${{minutes}}:${{remainder.toFixed(3).padStart(6, "0")}}`;
     }}
 
+    function bufferedAhead(video, atTime) {{
+        if (!video || !video.buffered || !video.buffered.length) return 0;
+        const time = Number.isFinite(atTime) ? Math.max(atTime, 0) : 0;
+
+        for (let i = 0; i < video.buffered.length; i += 1) {{
+            const start = video.buffered.start(i);
+            const end = video.buffered.end(i);
+            if (time >= start - 0.08 && time <= end + 0.08) {{
+                return Math.max(end - time, 0);
+            }}
+        }}
+        return 0;
+    }}
+
     function statusText() {{
-        const state = mainVideo.paused ? "Paused" : "Playing";
-        const rate = Number.isFinite(mainVideo.playbackRate) ? mainVideo.playbackRate : 1;
-        return `${{state}} • ${{rate.toFixed(1)}}× • ${{formatTime(mainVideo.currentTime)}}`;
+        const video = activeVideo();
+        if (!video) return "Paused • 1.0× • 0:00.000";
+
+        const state = video.paused ? "Paused" : "Playing";
+        const rate = Number.isFinite(video.playbackRate) ? video.playbackRate : 1;
+        const ahead = bufferedAhead(video, video.currentTime);
+        const bufferText = ahead > 0.15 ? ` • ${{ahead.toFixed(1)}}s buffered` : "";
+        return `${{state}} • ${{rate.toFixed(1)}}× • ${{formatTime(video.currentTime)}}${{bufferText}}`;
     }}
 
     function updateStatus() {{
         statusEl.textContent = statusText();
     }}
 
+    function updateBufferStatus() {{
+        const labels = priorityIndexes.map(index => {{
+            const video = residentVideos[index];
+            const angle = angles[index];
+            if (!video) return `${{angle.name}}: waiting`;
+
+            const ahead = bufferedAhead(video, video.currentTime);
+            if (ahead > 0.15) return `${{angle.name}}: ${{ahead.toFixed(1)}}s ready`;
+            if (video.readyState >= 3) return `${{angle.name}}: ready`;
+            if (video.networkState === HTMLMediaElement.NETWORK_LOADING) return `${{angle.name}}: buffering…`;
+            return `${{angle.name}}: primed`;
+        }});
+
+        bufferStatusEl.textContent = labels.length
+            ? `Background buffer • ${{labels.join(" • ")}}`
+            : "Background buffer follows the active and hovered cameras";
+    }}
+
     function snapshotState() {{
+        const video = activeVideo();
+        if (!video) {{
+            return {{ time: 0, paused: true, rate: 1, muted: false, volume: 1 }};
+        }}
         return {{
-            time: Number.isFinite(mainVideo.currentTime) ? mainVideo.currentTime : 0,
-            paused: mainVideo.paused,
-            rate: Number.isFinite(mainVideo.playbackRate) ? mainVideo.playbackRate : 1,
+            time: Number.isFinite(video.currentTime) ? video.currentTime : 0,
+            paused: video.paused,
+            rate: Number.isFinite(video.playbackRate) ? video.playbackRate : 1,
+            muted: Boolean(video.muted),
+            volume: Number.isFinite(video.volume) ? video.volume : 1,
         }};
     }}
 
+    function clampTime(video, desired) {{
+        if (!video || !Number.isFinite(desired)) return 0;
+        if (Number.isFinite(video.duration) && video.duration > 0) {{
+            return Math.min(Math.max(desired, 0), Math.max(video.duration - 0.04, 0));
+        }}
+        return Math.max(desired, 0);
+    }}
+
+    function promoteResident(index, desiredTime=null) {{
+        const video = residentVideos[index];
+        if (!video) return;
+
+        if (video.preload !== "auto") video.preload = "auto";
+
+        // Calling load() is useful before metadata exists. Once a resident video
+        // has data, leave it alone so the browser keeps its existing buffer.
+        if (video.readyState === 0) {{
+            try {{ video.load(); }} catch (_) {{}}
+        }}
+
+        if (Number.isFinite(desiredTime)) {{
+            const seek = () => {{
+                try {{
+                    const target = clampTime(video, desiredTime);
+                    if (Math.abs((video.currentTime || 0) - target) > 0.70) {{
+                        video.currentTime = target;
+                    }}
+                }} catch (_) {{}}
+            }};
+
+            if (video.readyState >= 1) seek();
+            else video.addEventListener("loadedmetadata", seek, {{ once: true }});
+        }}
+    }}
+
+    function primePriorityStandbys(force=false) {{
+        const current = activeVideo();
+        if (!current || !Number.isFinite(current.currentTime)) return;
+
+        const nowTime = current.currentTime;
+        if (!force && Math.abs(nowTime - lastStandbyPrimeTime) < 1.5) return;
+        lastStandbyPrimeTime = nowTime;
+
+        priorityIndexes.forEach(index => {{
+            if (index === activeIndex) return;
+            const standby = residentVideos[index];
+            if (!standby) return;
+            standby.pause();
+            promoteResident(index, nowTime);
+        }});
+
+        updateBufferStatus();
+    }}
+
     function setPreviewTime(preview) {{
-        if (!preview || !Number.isFinite(mainVideo.currentTime)) return;
-        const desired = Math.max(mainVideo.currentTime, 0);
+        const current = activeVideo();
+        if (!preview || !current || !Number.isFinite(current.currentTime)) return;
+        const desired = Math.max(current.currentTime, 0);
         const apply = () => {{
             if (!Number.isFinite(preview.duration) || preview.duration <= 0) return;
             preview.currentTime = Math.min(desired, Math.max(preview.duration - 0.04, 0));
@@ -592,22 +716,68 @@ def render_keyboard_video_workspace(
         }});
     }}
 
+    function showOnlyActiveResident() {{
+        residentVideos.forEach((video, index) => {{
+            const isActive = index === activeIndex;
+            video.classList.toggle("active", isActive);
+            video.controls = isActive;
+            video.setAttribute("aria-hidden", isActive ? "false" : "true");
+        }});
+    }}
+
+    function applyStateToVideo(video, state) {{
+        if (!video) return;
+
+        const apply = () => {{
+            try {{
+                video.playbackRate = state.rate;
+                video.muted = state.muted;
+                video.volume = Math.min(Math.max(state.volume, 0), 1);
+                video.currentTime = clampTime(video, state.time);
+            }} catch (_) {{}}
+
+            if (!state.paused) {{
+                const playWhenReady = () => {{
+                    const promise = video.play();
+                    if (promise && typeof promise.catch === "function") {{
+                        promise.catch(() => {{}});
+                    }}
+                }};
+
+                if (video.readyState >= 2) playWhenReady();
+                else video.addEventListener("canplay", playWhenReady, {{ once: true }});
+            }}
+            updateStatus();
+        }};
+
+        if (video.readyState >= 1) apply();
+        else video.addEventListener("loadedmetadata", apply, {{ once: true }});
+    }}
+
     function loadAngle(index, preserveState=true) {{
         if (!angles.length) return;
         const next = ((index % angles.length) + angles.length) % angles.length;
-        if (next === activeIndex && mainVideo.src) {{
+
+        if (next === activeIndex) {{
             root.focus({{ preventScroll: true }});
             return;
         }}
 
-        const state = preserveState ? snapshotState() : {{ time: 0, paused: true, rate: 1 }};
-        activeIndex = next;
-        pendingState = state;
+        const state = preserveState
+            ? snapshotState()
+            : {{ time: 0, paused: true, rate: 1, muted: false, volume: 1 }};
 
+        const previous = activeVideo();
+        if (previous) previous.pause();
+
+        activeIndex = next;
         const angle = angles[activeIndex];
+        const nextVideo = residentVideos[activeIndex];
+
         activeAngleEl.textContent = angle.name;
         stageAngleEl.textContent = angle.name;
         refreshButtons();
+        showOnlyActiveResident();
 
         warningEl.innerHTML = "";
         if (angle.sas_error) {{
@@ -617,85 +787,118 @@ def render_keyboard_video_workspace(
             warningEl.appendChild(warning);
         }}
 
-        measuredFrameStep = fallbackFrameStep;
-        lastFrameMediaTime = null;
+        promoteResident(activeIndex, state.time);
+        applyStateToVideo(nextVideo, state);
+        primePriorityStandbys(true);
 
-        mainVideo.pause();
-        mainVideo.src = angle.url;
-        mainVideo.load();
         root.focus({{ preventScroll: true }});
         updateStatus();
+        updateBufferStatus();
     }}
 
-    mainVideo.addEventListener("loadedmetadata", () => {{
-        if (!pendingState) return;
-        const state = pendingState;
-        pendingState = null;
+    function installFrameObserver(video, index) {{
+        frameSteps[index] = fallbackFrameStep;
+        lastFrameTimes[index] = null;
 
-        mainVideo.playbackRate = state.rate;
-        if (Number.isFinite(mainVideo.duration) && mainVideo.duration > 0) {{
-            mainVideo.currentTime = Math.min(
-                Math.max(state.time, 0),
-                Math.max(mainVideo.duration - 0.04, 0),
-            );
-        }}
+        if (typeof video.requestVideoFrameCallback !== "function") return;
 
-        if (!state.paused) {{
-            const promise = mainVideo.play();
-            if (promise && typeof promise.catch === "function") promise.catch(() => {{}});
-        }}
-        updateStatus();
-    }});
-
-    if (typeof mainVideo.requestVideoFrameCallback === "function") {{
         const observeFrame = (_now, metadata) => {{
             const mediaTime = metadata && Number.isFinite(metadata.mediaTime)
                 ? metadata.mediaTime
                 : null;
 
-            if (mediaTime !== null && lastFrameMediaTime !== null) {{
-                const delta = mediaTime - lastFrameMediaTime;
-                if (delta >= 0.005 && delta <= 0.100) measuredFrameStep = delta;
+            if (mediaTime !== null && lastFrameTimes[index] !== null) {{
+                const delta = mediaTime - lastFrameTimes[index];
+                if (delta >= 0.005 && delta <= 0.100) frameSteps[index] = delta;
             }}
-            if (mediaTime !== null) lastFrameMediaTime = mediaTime;
-            mainVideo.requestVideoFrameCallback(observeFrame);
+            if (mediaTime !== null) lastFrameTimes[index] = mediaTime;
+            video.requestVideoFrameCallback(observeFrame);
         }};
-        mainVideo.requestVideoFrameCallback(observeFrame);
+
+        video.requestVideoFrameCallback(observeFrame);
+    }}
+
+    function buildResidentVideo(angle, index) {{
+        const video = document.createElement("video");
+        video.className = "resident-video";
+        video.playsInline = true;
+        video.controls = false;
+        video.preload = (angle.is_program || angle.is_replay) ? "auto" : "metadata";
+        video.src = angle.url;
+        video.setAttribute("aria-label", angle.name);
+        video.setAttribute("aria-hidden", "true");
+
+        const activeEvents = ["play", "pause", "ratechange", "timeupdate", "seeked"];
+        activeEvents.forEach(eventName => {{
+            video.addEventListener(eventName, () => {{
+                if (index !== activeIndex) return;
+                updateStatus();
+                if (eventName === "timeupdate") primePriorityStandbys(false);
+            }});
+        }});
+
+        ["progress", "loadedmetadata", "loadeddata", "canplay"].forEach(eventName => {{
+            video.addEventListener(eventName, updateBufferStatus);
+        }});
+
+        installFrameObserver(video, index);
+        videoStack.appendChild(video);
+
+        // Explicitly kick off the two priority streams immediately. Browsers
+        // still control how much data they retain, but keeping these elements
+        // mounted lets their buffers survive camera switching.
+        if (angle.is_program || angle.is_replay) {{
+            try {{ video.load(); }} catch (_) {{}}
+        }}
+
+        return video;
     }}
 
     function seekBy(seconds) {{
-        if (!mainVideo.src) return;
-        const maxTime = Number.isFinite(mainVideo.duration)
-            ? Math.max(mainVideo.duration - 0.001, 0)
+        const video = activeVideo();
+        if (!video) return;
+
+        const maxTime = Number.isFinite(video.duration)
+            ? Math.max(video.duration - 0.001, 0)
             : Infinity;
-        mainVideo.currentTime = Math.min(
-            Math.max((mainVideo.currentTime || 0) + seconds, 0),
+
+        video.currentTime = Math.min(
+            Math.max((video.currentTime || 0) + seconds, 0),
             maxTime,
         );
+        primePriorityStandbys(true);
         updateStatus();
     }}
 
     function stepFrame(direction) {{
-        mainVideo.pause();
-        const step = Number.isFinite(measuredFrameStep) && measuredFrameStep > 0
-            ? measuredFrameStep
+        const video = activeVideo();
+        if (!video) return;
+        video.pause();
+
+        const measured = frameSteps[activeIndex];
+        const step = Number.isFinite(measured) && measured > 0
+            ? measured
             : fallbackFrameStep;
         seekBy(direction * step);
     }}
 
     function togglePlay() {{
-        if (!mainVideo.src) return;
-        if (mainVideo.paused) {{
-            const promise = mainVideo.play();
+        const video = activeVideo();
+        if (!video) return;
+
+        if (video.paused) {{
+            const promise = video.play();
             if (promise && typeof promise.catch === "function") promise.catch(() => {{}});
         }} else {{
-            mainVideo.pause();
+            video.pause();
         }}
         updateStatus();
     }}
 
     function setRate(rate) {{
-        mainVideo.playbackRate = rate;
+        const video = activeVideo();
+        if (!video) return;
+        video.playbackRate = rate;
         updateStatus();
     }}
 
@@ -746,7 +949,7 @@ def render_keyboard_video_workspace(
         const previewName = document.createElement("strong");
         previewName.textContent = angle.name;
         const previewHint = document.createElement("span");
-        previewHint.textContent = "preview";
+        previewHint.textContent = angle.is_program || angle.is_replay ? "priority buffered" : "preview";
         previewLabel.appendChild(previewName);
         previewLabel.appendChild(previewHint);
 
@@ -757,11 +960,22 @@ def render_keyboard_video_workspace(
         previews.set(index, previewVideo);
 
         const primePreview = () => {{
+            const current = activeVideo();
+            const currentTime = current && Number.isFinite(current.currentTime)
+                ? current.currentTime
+                : 0;
+
+            // Hovering does two things: load the thumbnail preview and promote
+            // the resident camera to auto preload, so a subsequent click is fast.
+            promoteResident(index, currentTime);
+
             if (!previewVideo.src) {{
+                previewVideo.preload = "auto";
                 previewVideo.src = angle.url;
-                previewVideo.load();
+                try {{ previewVideo.load(); }} catch (_) {{}}
             }}
             setPreviewTime(previewVideo);
+            updateBufferStatus();
         }};
 
         wrap.addEventListener("mouseenter", primePreview);
@@ -771,30 +985,40 @@ def render_keyboard_video_workspace(
         return wrap;
     }}
 
+    // Keep one resident video element per camera so browser buffers are not
+    // destroyed when the user switches cameras.
     angles.forEach((angle, index) => {{
+        residentVideos.push(buildResidentVideo(angle, index));
         cameraStrip.appendChild(buildCameraButton(angle, index));
     }});
 
     let initialIndex = angles.findIndex(angle => angle.is_program);
     if (initialIndex < 0) initialIndex = angles.findIndex(angle => angle.is_replay);
     if (initialIndex < 0) initialIndex = 0;
+
+    // If there was no named priority feed, at least prime the initial camera.
+    promoteResident(initialIndex, 0);
     loadAngle(initialIndex, false);
 
-    ["play", "pause", "ratechange", "timeupdate", "seeked"].forEach(eventName => {{
-        mainVideo.addEventListener(eventName, updateStatus);
-    }});
+    // Give the browser another chance to begin the preferred streams after the
+    // first active player is mounted.
+    window.setTimeout(() => {{
+        priorityIndexes.forEach(index => promoteResident(index, 0));
+        updateBufferStatus();
+    }}, 250);
 
     root.addEventListener("pointerdown", () => {{
         root.focus({{ preventScroll: true }});
-        focusNoteEl.textContent = "Shortcuts active • hover a camera for preview or click it to switch.";
+        focusNoteEl.textContent =
+            "Shortcuts active • Program and Replay Output buffer in the background • hover another camera to prime it.";
     }});
 
     document.addEventListener("fullscreenchange", () => {{
         if (document.fullscreenElement === root) {{
             root.focus({{ preventScroll: true }});
-            focusNoteEl.textContent = "Fullscreen shortcuts active • \\ exits fullscreen.";
+            focusNoteEl.textContent = "Fullscreen shortcuts active • \\\\ exits fullscreen.";
         }} else {{
-            focusNoteEl.textContent = "Shortcuts ready • \\ enters fullscreen.";
+            focusNoteEl.textContent = "Shortcuts ready • \\\\ enters fullscreen.";
         }}
     }});
 
@@ -834,6 +1058,7 @@ def render_keyboard_video_workspace(
     }}, true);
 
     updateStatus();
+    updateBufferStatus();
 }})();
 </script>
 </body>
