@@ -1426,6 +1426,19 @@ else:
     render_keyboard_video_workspace(
         video_angles,
         key=f"editor_play_{play.get('id', 'unknown')}",
+        challenge_category=(
+            clean_text(play.get("dvsport_crs_category"))
+            or clean_text(play.get("challenge_type"))
+        ),
+        challenge_result=clean_text(
+            play.get("challenge_result")
+        ),
+        set_number=clean_text(
+            play.get("set_number")
+        ),
+        score=clean_text(
+            play.get("score")
+        ),
     )
 
 

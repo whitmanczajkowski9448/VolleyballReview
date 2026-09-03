@@ -57,6 +57,10 @@ def render_keyboard_video_workspace(
     angles,
     *,
     key,
+    challenge_category="",
+    challenge_result="",
+    set_number="",
+    score="",
     frame_rate=DEFAULT_FRAME_RATE,
 ):
     """
@@ -135,6 +139,19 @@ def render_keyboard_video_workspace(
     height = _workspace_height(len(usable))
     safe_title = html.escape(dom_id)
 
+    safe_category = html.escape(
+        _clean_text(challenge_category) or "—"
+    )
+    safe_result = html.escape(
+        _clean_text(challenge_result) or "—"
+    )
+    safe_set = html.escape(
+        _clean_text(set_number) or "—"
+    )
+    safe_score = html.escape(
+        _clean_text(score) or "—"
+    )
+
     markup = f"""
 <!DOCTYPE html>
 <html>
@@ -209,6 +226,62 @@ def render_keyboard_video_workspace(
         gap: 9px;
         font-weight: 800;
         letter-spacing: .01em;
+    }}
+
+    .play-meta {{
+        display: grid;
+        grid-template-columns: minmax(180px, 1.5fr) minmax(155px, 1.15fr) minmax(70px, .55fr) minmax(90px, .65fr);
+        gap: 8px;
+        margin: 0 0 10px;
+    }}
+
+    .meta-card {{
+        min-width: 0;
+        padding: 9px 11px;
+        border: 1px solid rgba(143,200,255,.17);
+        border-radius: 10px;
+        background: rgba(0,0,0,.28);
+    }}
+
+    .meta-label {{
+        display: block;
+        margin-bottom: 3px;
+        color: var(--muted);
+        font-size: 9px;
+        line-height: 1.2;
+        font-weight: 800;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+    }}
+
+    .meta-value {{
+        display: block;
+        min-width: 0;
+        color: var(--text);
+        font-size: 13px;
+        line-height: 1.25;
+        font-weight: 800;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }}
+
+    .meta-card.category .meta-value {{
+        color: var(--sky);
+    }}
+
+    .meta-card.result .meta-value {{
+        color: var(--mint);
+    }}
+
+    .meta-card.set .meta-value,
+    .meta-card.score .meta-value {{
+        font-size: 15px;
+    }}
+
+    #vr-{safe_title}:fullscreen .play-meta {{
+        flex: 0 0 auto;
+        margin-bottom: 8px;
     }}
 
     .active-dot {{
@@ -496,6 +569,9 @@ def render_keyboard_video_workspace(
     }}
 
     @media (max-width: 760px) {{
+        .play-meta {{
+            grid-template-columns: 1fr 1fr;
+        }}
         .camera-btn {{ min-width: 78px; max-width: 145px; }}
         .preview {{ width: 210px; }}
         .main-stage video {{ max-height: none; }}
@@ -511,6 +587,25 @@ def render_keyboard_video_workspace(
             <span class="active-angle" id="active-angle">—</span>
         </div>
         <div class="play-status" id="play-status">Paused • 1.0× • 0:00.000</div>
+    </div>
+
+    <div class="play-meta" aria-label="DV Sport challenge information">
+        <div class="meta-card category" title="{safe_category}">
+            <span class="meta-label">DV Sport Challenge Category</span>
+            <span class="meta-value">{safe_category}</span>
+        </div>
+        <div class="meta-card result" title="{safe_result}">
+            <span class="meta-label">DV Sport Result</span>
+            <span class="meta-value">{safe_result}</span>
+        </div>
+        <div class="meta-card set">
+            <span class="meta-label">Set</span>
+            <span class="meta-value">{safe_set}</span>
+        </div>
+        <div class="meta-card score">
+            <span class="meta-label">Score</span>
+            <span class="meta-value">{safe_score}</span>
+        </div>
     </div>
 
     <div class="focus-note" id="focus-note">
