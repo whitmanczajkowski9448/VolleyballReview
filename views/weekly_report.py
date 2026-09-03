@@ -5,13 +5,6 @@ import streamlit as st
 
 from services.database import get_supabase
 from services.auth import require_admin
-from services.challenge_email import (
-    dedupe_addresses,
-    gmail_compose_url,
-    load_saved_recipients,
-    recipient_label,
-    split_manual_addresses,
-)
 from services.ui import (
     render_empty,
     render_kpi,
@@ -29,8 +22,8 @@ require_admin()
 render_page_header(
     "Weekly Coordinator Report",
     (
-        "Review coordinator-ready challenge metrics, completion status, "
-        "and special notes for a selected week or custom date range."
+        "Build a coordinator-ready report using date, conference, play type, "
+        "and review-status filters, then copy a plain-text email summary."
     ),
     eyebrow="NCAA WVB • COORDINATOR REPORTING",
 )
@@ -220,38 +213,6 @@ def date_range_caption(
 # WEEKLY EMAIL HELPERS
 # ============================================================
 
-def report_default_recipient_ids(
-    recipients,
-    conferences,
-):
-    conference_set = {
-        clean_text(value).upper()
-        for value in conferences
-        if clean_text(value)
-    }
-
-    defaults = []
-
-    for recipient in recipients:
-        if not recipient.get("is_default"):
-            continue
-
-        recipient_conference = clean_text(
-            recipient.get("conference")
-        ).upper()
-
-        if (
-            not recipient_conference
-            or recipient_conference in {"ALL", "NATIONAL"}
-            or recipient_conference in conference_set
-        ):
-            recipient_id = recipient.get("id")
-            if recipient_id is not None:
-                defaults.append(str(recipient_id))
-
-    return defaults
-
-
 def weekly_email_subject(
     report_start,
     report_end,
@@ -295,6 +256,9 @@ def build_weekly_email_body(
     failure_count,
     reversal_rate,
     average_seconds,
+    selected_conferences=None,
+    selected_play_types=None,
+    selected_statuses=None,
     custom_message="",
     include_challenge_details=True,
     include_poi_fault_details=True,
@@ -303,6 +267,21 @@ def build_weekly_email_body(
         "NCAA WOMEN'S VOLLEYBALL WEEKLY REVIEW",
         "=" * 44,
         f"Report period: {report_start:%B %d, %Y} through {report_end:%B %d, %Y}",
+        "",
+        "FILTERS APPLIED",
+        "-" * 15,
+        (
+            "Conferences: "
+            + (", ".join(selected_conferences or []) or "All")
+        ),
+        (
+            "Play types: "
+            + (", ".join(selected_play_types or []) or "All")
+        ),
+        (
+            "Review statuses: "
+            + (", ".join(selected_statuses or []) or "All")
+        ),
         "",
     ]
 
@@ -531,211 +510,6 @@ def build_weekly_email_body(
     return "\n".join(lines)
 
 
-@st.dialog(
-    "Generate Weekly Email Report",
-    width="large",
-)
-def weekly_email_dialog(
-    supabase,
-    report_start,
-    report_end,
-    period_df,
-    challenge_df,
-    poi_df,
-    fault_df,
-    total_challenges,
-    total_pois,
-    total_faults,
-    complete_challenges,
-    needs_review_challenges,
-    not_viewed_challenges,
-    reversed_count,
-    confirmed_count,
-    stands_count,
-    failure_count,
-    reversal_rate,
-    average_seconds,
-):
-    st.caption(
-        f"{report_start:%B %d, %Y} through {report_end:%B %d, %Y}"
-    )
-
-    saved_recipients = load_saved_recipients(
-        supabase
-    )
-
-    recipient_lookup = {
-        str(recipient.get("id")): recipient
-        for recipient in saved_recipients
-        if recipient.get("id") is not None
-    }
-
-    period_conferences = sorted({
-        clean_text(value)
-        for value in period_df.get(
-            "conference",
-            pd.Series(dtype="object"),
-        ).tolist()
-        if clean_text(value)
-    })
-
-    default_ids = report_default_recipient_ids(
-        saved_recipients,
-        period_conferences,
-    )
-
-    selected_ids = st.multiselect(
-        "Saved Recipients",
-        options=list(recipient_lookup.keys()),
-        default=[
-            recipient_id
-            for recipient_id in default_ids
-            if recipient_id in recipient_lookup
-        ],
-        format_func=lambda recipient_id: recipient_label(
-            recipient_lookup[recipient_id]
-        ),
-        key="weekly_email_saved_recipients",
-    )
-
-    manual_to = st.text_area(
-        "Additional To Addresses",
-        placeholder="name@example.com; second@example.com",
-        height=70,
-        key="weekly_email_manual_to",
-    )
-
-    cc_value = st.text_input(
-        "Cc",
-        key="weekly_email_cc",
-    )
-
-    bcc_value = st.text_input(
-        "Bcc",
-        key="weekly_email_bcc",
-    )
-
-    subject = st.text_input(
-        "Subject",
-        value=weekly_email_subject(
-            report_start,
-            report_end,
-        ),
-        key="weekly_email_subject",
-    )
-
-    custom_message = st.text_area(
-        "Opening Message",
-        placeholder=(
-            "Optional note that will appear above the report."
-        ),
-        height=90,
-        key="weekly_email_message",
-    )
-
-    option1, option2 = st.columns(2)
-
-    with option1:
-        include_challenge_details = st.checkbox(
-            "Include challenge-by-challenge summary",
-            value=True,
-            key="weekly_email_include_challenges",
-        )
-
-    with option2:
-        include_poi_fault_details = st.checkbox(
-            "Include POI and Fault details",
-            value=True,
-            key="weekly_email_include_other_plays",
-        )
-
-    body = build_weekly_email_body(
-        report_start=report_start,
-        report_end=report_end,
-        challenge_df=challenge_df,
-        poi_df=poi_df,
-        fault_df=fault_df,
-        total_challenges=total_challenges,
-        total_pois=total_pois,
-        total_faults=total_faults,
-        complete_challenges=complete_challenges,
-        needs_review_challenges=needs_review_challenges,
-        not_viewed_challenges=not_viewed_challenges,
-        reversed_count=reversed_count,
-        confirmed_count=confirmed_count,
-        stands_count=stands_count,
-        failure_count=failure_count,
-        reversal_rate=reversal_rate,
-        average_seconds=average_seconds,
-        custom_message=custom_message,
-        include_challenge_details=include_challenge_details,
-        include_poi_fault_details=include_poi_fault_details,
-    )
-
-    selected_saved_addresses = [
-        clean_text(
-            recipient_lookup[recipient_id].get("email")
-        )
-        for recipient_id in selected_ids
-        if recipient_id in recipient_lookup
-    ]
-
-    to_addresses = dedupe_addresses(
-        selected_saved_addresses
-        + split_manual_addresses(
-            manual_to
-        )
-    )
-
-    cc_addresses = dedupe_addresses(
-        split_manual_addresses(
-            cc_value
-        )
-    )
-
-    bcc_addresses = dedupe_addresses(
-        split_manual_addresses(
-            bcc_value
-        )
-    )
-
-    compose_url = gmail_compose_url(
-        to_addresses,
-        cc_addresses,
-        bcc_addresses,
-        subject,
-        body,
-    )
-
-    st.text_area(
-        "Email Preview",
-        value=body,
-        height=360,
-        key="weekly_email_preview",
-        disabled=True,
-    )
-
-    if not to_addresses:
-        st.info(
-            "No To recipient is selected yet. Gmail can still open, "
-            "and you can add recipients there."
-        )
-
-    if len(compose_url) > 7500:
-        st.warning(
-            "This is a long report. Gmail URL composition can be less "
-            "reliable with very large bodies. If Gmail truncates it, "
-            "copy the Email Preview text into the draft."
-        )
-
-    st.link_button(
-        "✉ Open Weekly Report in Gmail",
-        compose_url,
-        type="primary",
-        use_container_width=True,
-    )
-
-
 # ============================================================
 # LOAD DATA
 # ============================================================
@@ -827,6 +601,13 @@ df["report_status"] = df[
     "review_status"
 ].apply(
     normalized_review_status
+)
+
+df["report_conference"] = df.get(
+    "conference",
+    pd.Series(index=df.index, dtype="object"),
+).apply(
+    lambda value: clean_text(value) or "No Conference"
 )
 
 df["report_outcome"] = df.apply(
@@ -998,7 +779,9 @@ with st.container(
 # FILTER REPORT DATA
 # ============================================================
 
-period_df = df[
+# First apply the date window. The remaining report filters are populated only
+# from records that fall inside this date range so the choices stay relevant.
+date_period_df = df[
     (
         df["report_date"]
         >= report_start
@@ -1010,12 +793,194 @@ period_df = df[
 ].copy()
 
 
-if period_df.empty:
+if date_period_df.empty:
     render_empty(
         "No plays were found in the selected reporting period."
     )
     st.stop()
 
+
+render_section_label(
+    "Report Filters"
+)
+
+conference_options = sorted({
+    clean_text(value) or "No Conference"
+    for value in date_period_df[
+        "report_conference"
+    ].tolist()
+})
+
+play_type_preferred = [
+    "Challenge",
+    "POI",
+    "Fault",
+]
+play_type_available = {
+    clean_text(value)
+    for value in date_period_df[
+        "report_play_type"
+    ].tolist()
+    if clean_text(value)
+}
+play_type_options = [
+    value
+    for value in play_type_preferred
+    if value in play_type_available
+] + sorted(
+    value
+    for value in play_type_available
+    if value not in play_type_preferred
+)
+
+status_preferred = [
+    "Complete",
+    "Needs Review",
+    "Not Viewed",
+]
+status_available = {
+    clean_text(value)
+    for value in date_period_df[
+        "report_status"
+    ].tolist()
+    if clean_text(value)
+}
+status_options = [
+    value
+    for value in status_preferred
+    if value in status_available
+] + sorted(
+    value
+    for value in status_available
+    if value not in status_preferred
+)
+
+
+def normalize_filter_state(key, options):
+    """Keep multiselect state valid when a new date range changes options."""
+    if key not in st.session_state:
+        return
+
+    current = st.session_state.get(key) or []
+    valid = [
+        value
+        for value in current
+        if value in options
+    ]
+
+    # If every prior choice disappeared because the date window changed,
+    # select all currently available values rather than leaving a stale/empty
+    # filter behind. Users can still intentionally clear a filter afterward.
+    if current and not valid and options:
+        valid = list(options)
+
+    st.session_state[key] = valid
+
+
+normalize_filter_state(
+    "weekly_report_conference_filter",
+    conference_options,
+)
+normalize_filter_state(
+    "weekly_report_play_type_filter",
+    play_type_options,
+)
+normalize_filter_state(
+    "weekly_report_status_filter",
+    status_options,
+)
+
+filter1, filter2, filter3 = st.columns(3)
+
+with filter1:
+    selected_conferences = st.multiselect(
+        "Conference",
+        options=conference_options,
+        default=conference_options,
+        key="weekly_report_conference_filter",
+        help=(
+            "Only selected conferences are included in the report, tables, "
+            "metrics, coordinator notes, and copied email body."
+        ),
+    )
+
+with filter2:
+    selected_play_types = st.multiselect(
+        "Type of Play",
+        options=play_type_options,
+        default=play_type_options,
+        key="weekly_report_play_type_filter",
+        help="Choose Challenges, POIs, Faults, or any combination.",
+    )
+
+with filter3:
+    selected_statuses = st.multiselect(
+        "Review Status",
+        options=status_options,
+        default=status_options,
+        key="weekly_report_status_filter",
+        help=(
+            "The status filter applies to every selected play type, not only "
+            "Challenges."
+        ),
+    )
+
+if not selected_conferences:
+    st.info(
+        "Select at least one conference to include records in the report."
+    )
+    st.stop()
+
+if not selected_play_types:
+    st.info(
+        "Select at least one play type to include records in the report."
+    )
+    st.stop()
+
+if not selected_statuses:
+    st.info(
+        "Select at least one review status to include records in the report."
+    )
+    st.stop()
+
+period_df = date_period_df[
+    date_period_df[
+        "report_conference"
+    ].isin(
+        selected_conferences
+    )
+    & date_period_df[
+        "report_play_type"
+    ].isin(
+        selected_play_types
+    )
+    & date_period_df[
+        "report_status"
+    ].isin(
+        selected_statuses
+    )
+].copy()
+
+if period_df.empty:
+    render_empty(
+        "No plays match the selected date, conference, play-type, and "
+        "review-status filters."
+    )
+    st.stop()
+
+with st.container(
+    border=True
+):
+    st.markdown(
+        f"**Included Records:** {len(period_df):,}"
+    )
+    st.caption(
+        " • ".join([
+            f"Conferences: {', '.join(selected_conferences)}",
+            f"Play Types: {', '.join(selected_play_types)}",
+            f"Statuses: {', '.join(selected_statuses)}",
+        ])
+    )
 
 challenge_df = period_df[
     period_df[
@@ -1612,52 +1577,98 @@ if not fault_df.empty:
 
 
 # ============================================================
-# EMAIL REPORT
+# COPY-READY EMAIL REPORT
 # ============================================================
 
 render_section_label(
-    "Email Report"
+    "Copy-Ready Email"
 )
 
 with st.container(
     border=True
 ):
     st.markdown(
-        "**Generate a coordinator-ready email from this exact report window.**"
+        "**Build a plain-text email from exactly the records included above.**"
     )
     st.caption(
-        "The email includes report inventory, challenge metrics, coordinator "
-        "notes, and optional play-by-play details. Saved recipients from the "
-        "challenge email system are available in the email dialog."
+        "Nothing is opened or sent automatically. Use the copy icon on the "
+        "subject/body blocks, then paste into Gmail, Outlook, or any other "
+        "email platform."
     )
 
-    if st.button(
-        "✉ Generate Email Report",
-        type="primary",
-        use_container_width=True,
-        key="weekly_report_generate_email",
-    ):
-        weekly_email_dialog(
-            supabase=supabase,
-            report_start=report_start,
-            report_end=report_end,
-            period_df=period_df,
-            challenge_df=challenge_df,
-            poi_df=poi_df,
-            fault_df=fault_df,
-            total_challenges=total_challenges,
-            total_pois=total_pois,
-            total_faults=total_faults,
-            complete_challenges=complete_challenges,
-            needs_review_challenges=needs_review_challenges,
-            not_viewed_challenges=not_viewed_challenges,
-            reversed_count=reversed_count,
-            confirmed_count=confirmed_count,
-            stands_count=stands_count,
-            failure_count=failure_count,
-            reversal_rate=reversal_rate,
-            average_seconds=average_seconds,
+    email_subject = st.text_input(
+        "Suggested Subject",
+        value=weekly_email_subject(
+            report_start,
+            report_end,
+        ),
+        key="weekly_report_copy_subject",
+    )
+
+    custom_message = st.text_area(
+        "Optional Opening Message",
+        placeholder=(
+            "Add an optional introduction that will appear above the report."
+        ),
+        height=90,
+        key="weekly_report_copy_message",
+    )
+
+    email_option1, email_option2 = st.columns(2)
+
+    with email_option1:
+        include_challenge_details = st.checkbox(
+            "Include challenge-by-challenge summary",
+            value=True,
+            key="weekly_report_copy_include_challenges",
         )
+
+    with email_option2:
+        include_poi_fault_details = st.checkbox(
+            "Include POI and Fault details",
+            value=True,
+            key="weekly_report_copy_include_other_plays",
+        )
+
+    email_body = build_weekly_email_body(
+        report_start=report_start,
+        report_end=report_end,
+        challenge_df=challenge_df,
+        poi_df=poi_df,
+        fault_df=fault_df,
+        total_challenges=total_challenges,
+        total_pois=total_pois,
+        total_faults=total_faults,
+        complete_challenges=complete_challenges,
+        needs_review_challenges=needs_review_challenges,
+        not_viewed_challenges=not_viewed_challenges,
+        reversed_count=reversed_count,
+        confirmed_count=confirmed_count,
+        stands_count=stands_count,
+        failure_count=failure_count,
+        reversal_rate=reversal_rate,
+        average_seconds=average_seconds,
+        selected_conferences=selected_conferences,
+        selected_play_types=selected_play_types,
+        selected_statuses=selected_statuses,
+        custom_message=custom_message,
+        include_challenge_details=include_challenge_details,
+        include_poi_fault_details=include_poi_fault_details,
+    )
+
+    st.markdown("**Subject — click the copy icon**")
+    st.code(
+        email_subject,
+        language="text",
+        wrap_lines=True,
+    )
+
+    st.markdown("**Email Body — click the copy icon**")
+    st.code(
+        email_body,
+        language="text",
+        wrap_lines=True,
+    )
 
 
 # ============================================================
@@ -1668,7 +1679,7 @@ st.divider()
 
 st.caption(
     (
-        f"Coordinator report window: "
+        f"Filtered coordinator report: "
         f"{report_start:%m/%d/%Y} – "
         f"{report_end:%m/%d/%Y} • "
         f"{total_challenges:,} challenges • "
