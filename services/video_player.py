@@ -57,10 +57,6 @@ def render_keyboard_video_workspace(
     angles,
     *,
     key,
-    challenge_category="",
-    challenge_result="",
-    set_number="",
-    score="",
     frame_rate=DEFAULT_FRAME_RATE,
 ):
     """
@@ -139,17 +135,30 @@ def render_keyboard_video_workspace(
     height = _workspace_height(len(usable))
     safe_title = html.escape(dom_id)
 
+    # Workspace metadata is transported inside the angle payload instead of
+    # being passed as extra function arguments. This keeps the public player
+    # call backward-compatible while still letting Viewer/Editor display the
+    # selected play's DV Sport information in the black video header.
+    workspace_meta = {}
+    for source_angle in (angles or []):
+        if not isinstance(source_angle, dict):
+            continue
+        candidate_meta = source_angle.get("_volleyreview_meta")
+        if isinstance(candidate_meta, dict):
+            workspace_meta = candidate_meta
+            break
+
     safe_category = html.escape(
-        _clean_text(challenge_category) or "—"
+        _clean_text(workspace_meta.get("challenge_category")) or "—"
     )
     safe_result = html.escape(
-        _clean_text(challenge_result) or "—"
+        _clean_text(workspace_meta.get("challenge_result")) or "—"
     )
     safe_set = html.escape(
-        _clean_text(set_number) or "—"
+        _clean_text(workspace_meta.get("set_number")) or "—"
     )
     safe_score = html.escape(
-        _clean_text(score) or "—"
+        _clean_text(workspace_meta.get("score")) or "—"
     )
 
     markup = f"""
