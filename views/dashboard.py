@@ -1,1381 +1,312 @@
+from datetime import date, timedelta
 
 import altair as alt
 import pandas as pd
 import streamlit as st
 
 from services.database import get_supabase
+from services.review_taxonomy import (
+    normalize_challenge_category,
+    normalize_outcome,
+    normalize_referee_judgment,
+    normalize_review_status,
+)
 from services.ui import (
     NCAA_BLUE,
     SKY,
     MINT,
     LAVENDER,
-    MUTED,
-    render_page_header,
-    render_kpi,
-    render_section_label,
     render_empty,
+    render_kpi,
+    render_page_header,
+    render_section_label,
 )
 
 
-# ============================================================
-# HEADER
-# ============================================================
-
 render_page_header(
     "Review Intelligence",
-    (
-        "Live post-match review metrics, workflow progress, "
-        "challenge trends, faults, and plays of interest across your "
-        "active conferences."
-    ),
-    eyebrow="NCAA WVB • 2026 REVIEW CENTER",
+    "Current review workload and challenge analytics.",
+    eyebrow="NCAA WVB • REVIEW CENTER",
 )
 
 supabase = get_supabase()
 
 
-# ============================================================
-# HELPERS
-# ============================================================
-
 def clean_text(value):
     if value is None:
         return ""
-
     try:
         if pd.isna(value):
             return ""
     except Exception:
         pass
-
     text = str(value).strip()
-
-    if text.lower() in {
-        "nan",
-        "none",
-        "null",
-        "<na>",
-    }:
-        return ""
-
-    return text
+    return "" if text.lower() in {"", "none", "null", "nan", "<na>"} else text
 
 
-def normalized_play_type(value):
+def play_type(value):
     text = clean_text(value).upper()
-
-    if text in {
-        "CHALLENGE",
-        "CHALLENGES",
-    }:
+    if text in {"CHALLENGE", "CHALLENGES"}:
         return "Challenge"
-
-    if text in {
-        "POI",
-        "POIS",
-        "PLAY OF INTEREST",
-        "PLAYS OF INTEREST",
-    }:
+    if text in {"POI", "POIS", "PLAY OF INTEREST", "PLAYS OF INTEREST"}:
         return "POI"
-
-    if text in {
-        "FAULT",
-        "FAULTS",
-    }:
+    if text in {"FAULT", "FAULTS"}:
         return "Fault"
-
     return clean_text(value) or "Unknown"
 
 
-def normalized_review_status(value):
-    text = clean_text(value)
+def format_seconds(value):
+    try:
+        total = int(value)
+    except (TypeError, ValueError):
+        return "—"
+    return f"{total // 60}:{total % 60:02d}"
 
-    if not text:
-        return "Not Viewed"
-
-    if text.lower() == "complete":
-        return "Complete"
-
-    if text.lower() == "needs review":
-        return "Needs Review"
-
-    if text.lower() == "not viewed":
-        return "Not Viewed"
-
-    return text
-
-
-def normalize_outcome(row):
-    crs_outcome = clean_text(
-        row.get("crs_outcome")
-    )
-
-    source_outcome = clean_text(
-        row.get("challenge_result")
-    )
-
-    raw = (
-        crs_outcome
-        if crs_outcome
-        else source_outcome
-    )
-
-    if not raw:
-        return "Not Tagged"
-
-    upper = raw.upper()
-
-    if "REVER" in upper:
-        return "REVERSED"
-
-    if "CONFIRM" in upper:
-        return "CONFIRMED"
-
-    if (
-        "STAND" in upper
-        or "INCONCLUSIVE" in upper
-    ):
-        return "STANDS"
-
-    if (
-        "MECHANICAL" in upper
-        or "VIDEO FAILURE" in upper
-        or "VIDEO FAIL" in upper
-    ):
-        return "MECHANICAL / VIDEO FAILURE"
-
-    return upper
-
-
-def is_reversed(row):
-    return normalize_outcome(row) == "REVERSED"
-
-
-# ============================================================
-# LOAD DATA
-# ============================================================
 
 try:
     response = (
-        supabase
-        .table("plays")
+        supabase.table("plays")
         .select("*")
-        .order(
-            "match_date",
-            desc=False,
-        )
+        .order("match_date", desc=False)
         .execute()
     )
-
     rows = response.data or []
-
 except Exception as exc:
-    st.error(
-        "Could not load dashboard data."
-    )
+    st.error("Could not load dashboard data.")
     st.exception(exc)
     st.stop()
 
-
 if not rows:
-    render_empty(
-        "No plays are available yet. "
-        "Run the DV Sport sync to populate the dashboard."
-    )
+    render_empty("No plays are available yet.")
     st.stop()
-
 
 df = pd.DataFrame(rows)
-
-if "is_unusable" not in df.columns:
-    df["is_unusable"] = False
-
-unusable_mask = (
-    df["is_unusable"]
-    .fillna(False)
-    .astype(bool)
-)
-
-excluded_unusable_count = int(
-    unusable_mask.sum()
-)
-
-df = df[
-    ~unusable_mask
-].copy()
-
-if excluded_unusable_count:
-    st.caption(
-        (
-            f"{excluded_unusable_count:,} unusable record"
-            f"{'' if excluded_unusable_count == 1 else 's'} "
-            "excluded from all dashboard metrics and analysis."
-        )
-    )
-
+if "is_unusable" in df.columns:
+    df = df[~df["is_unusable"].fillna(False).astype(bool)].copy()
 if df.empty:
-    render_empty(
-        (
-            "All available records are marked unusable, "
-            "so there is nothing to include in dashboard analysis."
-        )
-    )
+    render_empty("No plays are available for analysis.")
     st.stop()
 
-
-# ============================================================
-# EXPECTED COLUMNS
-# ============================================================
-
-expected_columns = [
-    "conference",
-    "play_type",
-    "review_status",
-    "crs_category",
-    "ncaa_challenge_category",
-    "play_category",
-    "dvsport_play_category",
-    "is_starred",
-    "crs_outcome",
-    "challenge_result",
-    "match_date",
-]
-
-for column in expected_columns:
+for column in [
+    "conference", "play_type", "review_status", "ncaa_challenge_category",
+    "crs_category", "crs_outcome", "challenge_result", "referee_judgment",
+    "review_decision_correct", "challenge_length_seconds",
+    "dvsport_challenge_length_seconds", "is_starred", "match_date",
+    "match_name", "set_number", "score", "weekly_summary_note",
+]:
     if column not in df.columns:
         df[column] = None
 
-
-# ============================================================
-# NORMALIZED FIELDS
-# ============================================================
-
-df["dashboard_play_type"] = (
-    df["play_type"]
-    .apply(normalized_play_type)
+df["type"] = df["play_type"].apply(play_type)
+df["status"] = df["review_status"].apply(normalize_review_status)
+df["conference_display"] = df["conference"].apply(lambda x: clean_text(x) or "Unknown")
+df["date"] = pd.to_datetime(df["match_date"], errors="coerce").dt.date
+df["outcome"] = df.apply(
+    lambda row: normalize_outcome(row.get("crs_outcome") or row.get("challenge_result")),
+    axis=1,
+)
+df["category"] = df.apply(
+    lambda row: normalize_challenge_category(
+        row.get("ncaa_challenge_category") or row.get("crs_category")
+    ) or "Not Tagged",
+    axis=1,
+)
+df["judgment"] = df.apply(
+    lambda row: normalize_referee_judgment(
+        row.get("referee_judgment"), row.get("review_decision_correct")
+    ) or "Not Tagged",
+    axis=1,
+)
+df["length"] = pd.to_numeric(
+    df["challenge_length_seconds"].where(
+        df["challenge_length_seconds"].notna(),
+        df["dvsport_challenge_length_seconds"],
+    ),
+    errors="coerce",
 )
 
-df["dashboard_status"] = (
-    df["review_status"]
-    .apply(normalized_review_status)
-)
+render_section_label("Dashboard Filters")
+conferences = sorted(df["conference_display"].dropna().unique().tolist())
 
-df["dashboard_conference"] = (
-    df["conference"]
-    .apply(clean_text)
-    .replace(
-        "",
-        "Unknown",
-    )
-)
-
-
-# ============================================================
-# FILTERS
-# ============================================================
-
-render_section_label(
-    "Dashboard Filters"
-)
-
-filter1, filter2, filter3 = st.columns(
-    [
-        1.25,
-        1.0,
-        1.0,
-    ]
-)
-
-conference_values = sorted(
-    {
-        value
-        for value in df[
-            "dashboard_conference"
-        ]
-        if value != "Unknown"
-    }
-)
-
-with filter1:
-    conference_filter = st.selectbox(
-        "Conference",
-        [
-            "All"
-        ]
-        + conference_values,
-    )
-
-with filter2:
-    play_type_filter = st.selectbox(
-        "Play Type",
-        [
-            "All Plays",
-            "Challenges",
-            "POIs",
-            "FAULTS",
-        ],
-    )
-
-with filter3:
+f1, f2, f3, f4 = st.columns(4)
+with f1:
+    conf_filter = st.selectbox("Conference", ["All"] + conferences, key="dash_conf")
+with f2:
+    type_filter = st.selectbox("Play Type", ["All", "Challenge", "POI", "Fault"], key="dash_type")
+with f3:
     status_filter = st.selectbox(
         "Review Status",
-        [
-            "All",
-            "Not Viewed",
-            "Needs Review",
-            "Complete",
-        ],
+        ["All", "Not Viewed", "Needs Additional Review", "Complete"],
+        key="dash_status",
     )
-
-
-# ============================================================
-# APPLY FILTERS
-# ============================================================
+with f4:
+    date_filter = st.selectbox(
+        "Date Range",
+        ["All Dates", "Last 7 Days", "Last 30 Days"],
+        key="dash_date",
+    )
 
 filtered = df.copy()
-
-if conference_filter != "All":
-    filtered = filtered[
-        filtered[
-            "dashboard_conference"
-        ]
-        == conference_filter
-    ]
-
-if play_type_filter == "Challenges":
-    filtered = filtered[
-        filtered[
-            "dashboard_play_type"
-        ]
-        == "Challenge"
-    ]
-
-elif play_type_filter == "POIs":
-    filtered = filtered[
-        filtered[
-            "dashboard_play_type"
-        ]
-        == "POI"
-    ]
-
-elif play_type_filter == "FAULTS":
-    filtered = filtered[
-        filtered[
-            "dashboard_play_type"
-        ]
-        == "Fault"
-    ]
-
+if conf_filter != "All":
+    filtered = filtered[filtered["conference_display"] == conf_filter]
+if type_filter != "All":
+    filtered = filtered[filtered["type"] == type_filter]
 if status_filter != "All":
-    filtered = filtered[
-        filtered[
-            "dashboard_status"
-        ]
-        == status_filter
-    ]
+    filtered = filtered[filtered["status"] == status_filter]
+if date_filter != "All Dates":
+    days = 6 if date_filter == "Last 7 Days" else 29
+    cutoff = date.today() - timedelta(days=days)
+    filtered = filtered[filtered["date"].notna() & (filtered["date"] >= cutoff)]
 
+if filtered.empty:
+    render_empty("No plays match the current filters.")
+    st.stop()
 
-challenge_df = filtered[
-    filtered[
-        "dashboard_play_type"
-    ]
-    == "Challenge"
-].copy()
+challenge_df = filtered[filtered["type"] == "Challenge"].copy()
+poi_df = filtered[filtered["type"] == "POI"].copy()
+fault_df = filtered[filtered["type"] == "Fault"].copy()
 
-poi_df = filtered[
-    filtered[
-        "dashboard_play_type"
-    ]
-    == "POI"
-].copy()
+total = len(filtered)
+challenges = len(challenge_df)
+pois = len(poi_df)
+faults = len(fault_df)
+complete = int((filtered["status"] == "Complete").sum())
+needs = int((filtered["status"] == "Needs Additional Review").sum())
+not_viewed = int((filtered["status"] == "Not Viewed").sum())
 
-fault_df = filtered[
-    filtered[
-        "dashboard_play_type"
-    ]
-    == "Fault"
-].copy()
+render_section_label("Review Inventory")
+k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
+for col, label, value, tone in [
+    (k1, "Total Plays", total, "ncaa"),
+    (k2, "Challenges", challenges, "blue"),
+    (k3, "POIs", pois, "purple"),
+    (k4, "Faults", faults, "green"),
+    (k5, "Complete", complete, "green"),
+    (k6, "Needs Additional Review", needs, "purple"),
+    (k7, "Not Viewed", not_viewed, "blue"),
+]:
+    with col:
+        render_kpi(label, f"{value:,}", "", tone)
 
+if not challenge_df.empty:
+    reversed_count = int((challenge_df["outcome"] == "Reversed").sum())
+    confirmed_count = int((challenge_df["outcome"] == "Confirmed").sum())
+    stands_count = int((challenge_df["outcome"] == "Stands").sum())
+    mechanical_count = int((challenge_df["outcome"] == "Mechanical Failure").sum())
+    reversal_rate = reversed_count / challenges * 100 if challenges else 0.0
+    valid_lengths = challenge_df["length"].dropna()
+    avg_length = int(round(valid_lengths.mean())) if not valid_lengths.empty else None
+    incorrect = int((challenge_df["judgment"] == "Incorrect").sum())
+    unclear = int((challenge_df["judgment"] == "Unclear").sum())
 
-# ============================================================
-# KPI CALCULATIONS
-# ============================================================
+    render_section_label("Challenge Metrics")
+    m1, m2, m3, m4, m5 = st.columns(5)
+    with m1:
+        render_kpi("Reversal Rate", f"{reversal_rate:.1f}%", f"{reversed_count} reversed", "ncaa")
+    with m2:
+        render_kpi("Confirmed", f"{confirmed_count:,}", "", "green")
+    with m3:
+        render_kpi("Stands", f"{stands_count:,}", "", "blue")
+    with m4:
+        render_kpi("Avg. Review", format_seconds(avg_length), "", "purple")
+    with m5:
+        render_kpi("Incorrect / Unclear", f"{incorrect} / {unclear}", "", "ncaa")
 
-total_plays = len(filtered)
-total_challenges = len(challenge_df)
-total_pois = len(poi_df)
-total_faults = len(fault_df)
+    render_section_label("Challenge Analytics")
+    left, right = st.columns(2)
 
-complete = int(
-    (
-        filtered[
-            "dashboard_status"
-        ]
-        == "Complete"
-    ).sum()
-)
-
-needs_review = int(
-    (
-        filtered[
-            "dashboard_status"
-        ]
-        == "Needs Review"
-    ).sum()
-)
-
-not_viewed = int(
-    (
-        filtered[
-            "dashboard_status"
-        ]
-        == "Not Viewed"
-    ).sum()
-)
-
-completion_rate = (
-    complete
-    / total_plays
-    * 100
-    if total_plays
-    else 0
-)
-
-reversed_count = 0
-
-if total_challenges:
-    reversed_count = int(
-        challenge_df
-        .apply(
-            is_reversed,
-            axis=1,
-        )
-        .sum()
-    )
-
-reversal_rate = (
-    reversed_count
-    / total_challenges
-    * 100
-    if total_challenges
-    else 0
-)
-
-reviewed_challenges = int(
-    (
-        challenge_df[
-            "dashboard_status"
-        ]
-        == "Complete"
-    ).sum()
-)
-
-challenge_completion_rate = (
-    reviewed_challenges
-    / total_challenges
-    * 100
-    if total_challenges
-    else 0
-)
-
-
-# ============================================================
-# PRIMARY KPI ROW
-# ============================================================
-
-render_section_label(
-    "Review Inventory"
-)
-
-k1, k2, k3, k4, k5, k6, k7 = st.columns(
-    7
-)
-
-with k1:
-    render_kpi(
-        "Total Plays",
-        f"{total_plays:,}",
-        "Challenges + POIs + FAULTS",
-        "ncaa",
-    )
-
-with k2:
-    render_kpi(
-        "Challenges",
-        f"{total_challenges:,}",
-        "Replay reviews",
-        "blue",
-    )
-
-with k3:
-    render_kpi(
-        "POIs",
-        f"{total_pois:,}",
-        "Plays of interest",
-        "purple",
-    )
-
-with k4:
-    render_kpi(
-        "FAULTS",
-        f"{total_faults:,}",
-        "Imported fault clips",
-        "green",
-    )
-
-with k5:
-    render_kpi(
-        "Complete",
-        f"{complete:,}",
-        f"{completion_rate:.1f}% of visible plays",
-        "green",
-    )
-
-with k6:
-    render_kpi(
-        "Needs Review",
-        f"{needs_review:,}",
-        "Flagged for another look",
-        "purple",
-    )
-
-with k7:
-    render_kpi(
-        "Not Viewed",
-        f"{not_viewed:,}",
-        "Remaining in queue",
-        "blue",
-    )
-
-
-# ============================================================
-# SECONDARY KPI ROW
-# ============================================================
-
-st.write("")
-
-render_section_label(
-    "Challenge Metrics"
-)
-
-m1, m2, m3 = st.columns(
-    3
-)
-
-with m1:
-    render_kpi(
-        "Reversal Rate",
-        f"{reversal_rate:.1f}%",
-        f"{reversed_count:,} reversed",
-        "ncaa",
-    )
-
-with m2:
-    render_kpi(
-        "Reversed Challenges",
-        f"{reversed_count:,}",
-        (
-            f"Out of {total_challenges:,} "
-            "visible challenges"
-        ),
-        "purple",
-    )
-
-with m3:
-    render_kpi(
-        "Challenge Completion",
-        f"{challenge_completion_rate:.1f}%",
-        (
-            f"{reviewed_challenges:,} "
-            f"of {total_challenges:,}"
-        ),
-        "green",
-    )
-
-
-# ============================================================
-# REVIEW COMPLETION
-# ============================================================
-
-st.write("")
-
-render_section_label(
-    "Review Completion"
-)
-
-if total_plays:
-    st.progress(
-        min(
-            max(
-                completion_rate / 100,
-                0.0,
-            ),
-            1.0,
-        )
-    )
-
-    st.caption(
-        f"{complete:,} of {total_plays:,} visible plays "
-        f"are complete ({completion_rate:.1f}%)."
-    )
-
-else:
-    st.caption(
-        "No plays match the current filters."
-    )
-
-
-# ============================================================
-# ANALYTICS
-# ============================================================
-
-st.write("")
-
-render_section_label(
-    "Analytics"
-)
-
-chart_left, chart_right = st.columns(
-    2
-)
-
-
-# ============================================================
-# PLAYS BY TYPE
-# ============================================================
-
-with chart_left:
-    st.subheader(
-        "Plays by Type"
-    )
-
-    type_data = (
-        filtered[
-            "dashboard_play_type"
-        ]
+    outcome_data = (
+        challenge_df["outcome"]
+        .replace("", "Not Tagged")
         .value_counts()
-        .rename_axis(
-            "Play Type"
-        )
-        .reset_index(
-            name="Plays"
-        )
+        .rename_axis("Outcome")
+        .reset_index(name="Challenges")
     )
-
-    if not type_data.empty:
-        type_order = [
-            "Challenge",
-            "POI",
-            "Fault",
-        ]
-
-        type_colors = alt.Scale(
-            domain=type_order,
-            range=[
-                SKY,
-                LAVENDER,
-                MINT,
-            ],
-        )
-
-        type_chart = (
-            alt.Chart(
-                type_data
-            )
-            .mark_bar(
-                cornerRadiusTopLeft=6,
-                cornerRadiusTopRight=6,
-            )
+    with left:
+        st.subheader("Challenge Outcomes")
+        chart = (
+            alt.Chart(outcome_data)
+            .mark_bar(cornerRadiusTopRight=6, cornerRadiusBottomRight=6)
             .encode(
-                x=alt.X(
-                    "Play Type:N",
-                    sort=type_order,
-                    title=None,
-                    axis=alt.Axis(
-                        labelAngle=0
-                    ),
-                ),
-                y=alt.Y(
-                    "Plays:Q",
-                    title=None,
-                ),
-                color=alt.Color(
-                    "Play Type:N",
-                    scale=type_colors,
-                    legend=None,
-                ),
-                tooltip=[
-                    "Play Type:N",
-                    "Plays:Q",
-                ],
+                x=alt.X("Challenges:Q", title=None),
+                y=alt.Y("Outcome:N", sort="-x", title=None),
+                color=alt.value(NCAA_BLUE),
+                tooltip=["Outcome:N", "Challenges:Q"],
             )
-            .properties(
-                height=280
-            )
+            .properties(height=max(220, 38 * len(outcome_data)))
         )
-
-        st.altair_chart(
-            type_chart,
-            use_container_width=True,
-        )
-
-    else:
-        st.caption(
-            "No play data available."
-        )
-
-
-# ============================================================
-# PLAYS BY CONFERENCE
-# ============================================================
-
-with chart_right:
-    st.subheader(
-        "Plays by Conference"
-    )
-
-    conference_chart_data = (
-        filtered[
-            "dashboard_conference"
-        ]
-        .value_counts()
-        .rename_axis(
-            "Conference"
-        )
-        .reset_index(
-            name="Plays"
-        )
-    )
-
-    if not conference_chart_data.empty:
-        conference_chart = (
-            alt.Chart(
-                conference_chart_data
-            )
-            .mark_bar(
-                cornerRadiusTopRight=6,
-                cornerRadiusBottomRight=6,
-            )
-            .encode(
-                x=alt.X(
-                    "Plays:Q",
-                    title=None,
-                ),
-                y=alt.Y(
-                    "Conference:N",
-                    sort="-x",
-                    title=None,
-                ),
-                color=alt.value(
-                    SKY
-                ),
-                tooltip=[
-                    "Conference:N",
-                    "Plays:Q",
-                ],
-            )
-            .properties(
-                height=max(
-                    240,
-                    42
-                    * len(
-                        conference_chart_data
-                    ),
-                )
-            )
-        )
-
-        st.altair_chart(
-            conference_chart,
-            use_container_width=True,
-        )
-
-    else:
-        st.caption(
-            "No conference data available."
-        )
-
-
-# ============================================================
-# SECOND ANALYTICS ROW
-# ============================================================
-
-chart_left2, chart_right2 = st.columns(
-    2
-)
-
-
-# ============================================================
-# REVIEW WORKFLOW
-# ============================================================
-
-with chart_left2:
-    st.subheader(
-        "Review Workflow"
-    )
-
-    status_order = [
-        "Complete",
-        "Needs Review",
-        "Not Viewed",
-    ]
-
-    status_data = pd.DataFrame(
-        {
-            "Status":
-                status_order,
-
-            "Count": [
-                complete,
-                needs_review,
-                not_viewed,
-            ],
-        }
-    )
-
-    status_colors = alt.Scale(
-        domain=status_order,
-        range=[
-            MINT,
-            LAVENDER,
-            MUTED,
-        ],
-    )
-
-    status_chart = (
-        alt.Chart(
-            status_data
-        )
-        .mark_bar(
-            cornerRadiusTopLeft=6,
-            cornerRadiusTopRight=6,
-        )
-        .encode(
-            x=alt.X(
-                "Status:N",
-                sort=status_order,
-                title=None,
-                axis=alt.Axis(
-                    labelAngle=0
-                ),
-            ),
-            y=alt.Y(
-                "Count:Q",
-                title=None,
-            ),
-            color=alt.Color(
-                "Status:N",
-                scale=status_colors,
-                legend=None,
-            ),
-            tooltip=[
-                "Status:N",
-                "Count:Q",
-            ],
-        )
-        .properties(
-            height=280
-        )
-    )
-
-    st.altair_chart(
-        status_chart,
-        use_container_width=True,
-    )
-
-
-# ============================================================
-# CHALLENGES BY CONFERENCE
-# ============================================================
-
-with chart_right2:
-    st.subheader(
-        "Challenges by Conference"
-    )
-
-    challenge_conf_data = (
-        challenge_df[
-            "dashboard_conference"
-        ]
-        .value_counts()
-        .rename_axis(
-            "Conference"
-        )
-        .reset_index(
-            name="Challenges"
-        )
-    )
-
-    if not challenge_conf_data.empty:
-        challenge_conf_chart = (
-            alt.Chart(
-                challenge_conf_data
-            )
-            .mark_bar(
-                cornerRadiusTopRight=6,
-                cornerRadiusBottomRight=6,
-            )
-            .encode(
-                x=alt.X(
-                    "Challenges:Q",
-                    title=None,
-                ),
-                y=alt.Y(
-                    "Conference:N",
-                    sort="-x",
-                    title=None,
-                ),
-                color=alt.value(
-                    NCAA_BLUE
-                ),
-                tooltip=[
-                    "Conference:N",
-                    "Challenges:Q",
-                ],
-            )
-            .properties(
-                height=max(
-                    240,
-                    42
-                    * len(
-                        challenge_conf_data
-                    ),
-                )
-            )
-        )
-
-        st.altair_chart(
-            challenge_conf_chart,
-            use_container_width=True,
-        )
-
-    else:
-        st.caption(
-            "No challenge data available."
-        )
-
-
-# ============================================================
-# CHALLENGE ANALYTICS
-# ============================================================
-
-st.write("")
-
-render_section_label(
-    "Challenge Analytics"
-)
-
-challenge_left, challenge_right = st.columns(
-    2
-)
-
-
-# ============================================================
-# CHALLENGE CATEGORIES
-# ============================================================
-
-with challenge_left:
-    st.subheader(
-        "Challenge Categories"
-    )
+        st.altair_chart(chart, use_container_width=True)
 
     category_data = (
-        challenge_df[
-            "ncaa_challenge_category"
-        ]
-        .where(
-            challenge_df[
-                "ncaa_challenge_category"
-            ].apply(clean_text) != "",
-            challenge_df[
-                "crs_category"
-            ],
-        )
-        .apply(clean_text)
-        .replace(
-            "",
-            "Not Tagged",
-        )
+        challenge_df["category"]
         .value_counts()
-        .rename_axis(
-            "Category"
-        )
-        .reset_index(
-            name="Challenges"
-        )
+        .rename_axis("Category")
+        .reset_index(name="Challenges")
     )
-
-    if not category_data.empty:
-        category_chart = (
-            alt.Chart(
-                category_data
-            )
-            .mark_bar(
-                cornerRadiusTopRight=6,
-                cornerRadiusBottomRight=6,
-            )
+    with right:
+        st.subheader("Challenge Categories")
+        chart = (
+            alt.Chart(category_data)
+            .mark_bar(cornerRadiusTopRight=6, cornerRadiusBottomRight=6)
             .encode(
-                x=alt.X(
-                    "Challenges:Q",
-                    title=None,
-                ),
-                y=alt.Y(
-                    "Category:N",
-                    sort="-x",
-                    title=None,
-                ),
-                color=alt.value(
-                    LAVENDER
-                ),
-                tooltip=[
-                    "Category:N",
-                    "Challenges:Q",
-                ],
+                x=alt.X("Challenges:Q", title=None),
+                y=alt.Y("Category:N", sort="-x", title=None),
+                color=alt.value(SKY),
+                tooltip=["Category:N", "Challenges:Q"],
             )
-            .properties(
-                height=max(
-                    240,
-                    38
-                    * len(
-                        category_data
-                    ),
-                )
-            )
+            .properties(height=max(220, 38 * len(category_data)))
         )
+        st.altair_chart(chart, use_container_width=True)
 
-        st.altair_chart(
-            category_chart,
-            use_container_width=True,
-        )
-
-    else:
-        st.caption(
-            "No challenge category data available."
-        )
-
-
-# ============================================================
-# CHALLENGE OUTCOMES
-# ============================================================
-
-with challenge_right:
-    st.subheader(
-        "Challenge Outcomes"
-    )
-
-    if not challenge_df.empty:
-        normalized_outcomes = (
-            challenge_df
-            .apply(
-                normalize_outcome,
-                axis=1,
-            )
-        )
-
-        outcome_data = (
-            normalized_outcomes
-            .value_counts()
-            .rename_axis(
-                "Outcome"
-            )
-            .reset_index(
-                name="Challenges"
-            )
-        )
-
-        preferred_order = [
-            "REVERSED",
-            "CONFIRMED",
-            "STANDS",
-            "MECHANICAL / VIDEO FAILURE",
-            "Not Tagged",
-        ]
-
-        known = [
-            value
-            for value
-            in preferred_order
-            if value
-            in outcome_data[
-                "Outcome"
-            ].tolist()
-        ]
-
-        extras = [
-            value
-            for value
-            in outcome_data[
-                "Outcome"
-            ].tolist()
-            if value
-            not in known
-        ]
-
-        chart_order = (
-            known
-            + extras
-        )
-
-        outcome_chart = (
-            alt.Chart(
-                outcome_data
-            )
-            .mark_bar(
-                cornerRadiusTopRight=6,
-                cornerRadiusBottomRight=6,
-            )
-            .encode(
-                x=alt.X(
-                    "Challenges:Q",
-                    title=None,
-                ),
-                y=alt.Y(
-                    "Outcome:N",
-                    sort=chart_order,
-                    title=None,
-                ),
-                color=alt.value(
-                    NCAA_BLUE
-                ),
-                tooltip=[
-                    "Outcome:N",
-                    "Challenges:Q",
-                ],
-            )
-            .properties(
-                height=max(
-                    240,
-                    42
-                    * len(
-                        outcome_data
-                    ),
-                )
-            )
-        )
-
-        st.altair_chart(
-            outcome_chart,
-            use_container_width=True,
-        )
-
-    else:
-        st.caption(
-            "No challenge outcome data available."
-        )
-
-
-# ============================================================
-# PLAY / FAULT CLASSIFICATION ANALYTICS
-# ============================================================
-
-st.write("")
-
-render_section_label(
-    "Play Classification Analytics"
-)
-
-classification_left, classification_right = st.columns(
-    2
-)
-
-with classification_left:
-    st.subheader(
-        "All Plays by Review Category"
-    )
-
-    classification_series = (
-        filtered[
-            "play_category"
-        ]
-        .apply(clean_text)
-        .replace(
-            "",
-            "Not Tagged",
-        )
-    )
-
-    classification_data = (
-        classification_series
+    left2, right2 = st.columns(2)
+    judgment_data = (
+        challenge_df["judgment"]
         .value_counts()
-        .rename_axis(
-            "Play Category"
-        )
-        .reset_index(
-            name="Plays"
-        )
+        .rename_axis("Judgment")
+        .reset_index(name="Challenges")
     )
-
-    if not classification_data.empty:
-        classification_chart = (
-            alt.Chart(
-                classification_data
-            )
-            .mark_bar(
-                cornerRadiusTopRight=6,
-                cornerRadiusBottomRight=6,
-            )
+    with left2:
+        st.subheader("Referee Judgment")
+        chart = (
+            alt.Chart(judgment_data)
+            .mark_bar(cornerRadiusTopRight=6, cornerRadiusBottomRight=6)
             .encode(
-                x=alt.X(
-                    "Plays:Q",
-                    title=None,
-                ),
-                y=alt.Y(
-                    "Play Category:N",
-                    sort="-x",
-                    title=None,
-                ),
-                color=alt.value(
-                    LAVENDER
-                ),
-                tooltip=[
-                    "Play Category:N",
-                    "Plays:Q",
-                ],
+                x=alt.X("Challenges:Q", title=None),
+                y=alt.Y("Judgment:N", sort="-x", title=None),
+                color=alt.value(LAVENDER),
+                tooltip=["Judgment:N", "Challenges:Q"],
             )
-            .properties(
-                height=max(
-                    280,
-                    32
-                    * len(
-                        classification_data
-                    ),
-                )
-            )
+            .properties(height=max(220, 38 * len(judgment_data)))
         )
+        st.altair_chart(chart, use_container_width=True)
 
-        st.altair_chart(
-            classification_chart,
-            use_container_width=True,
-        )
-
-    else:
-        st.caption(
-            "No play-category data available."
-        )
-
-
-with classification_right:
-    st.subheader(
-        "FAULTS by Conference"
-    )
-
-    fault_conf_data = (
-        fault_df[
-            "dashboard_conference"
-        ]
+    conference_data = (
+        challenge_df["conference_display"]
         .value_counts()
-        .rename_axis(
-            "Conference"
-        )
-        .reset_index(
-            name="FAULTS"
-        )
+        .rename_axis("Conference")
+        .reset_index(name="Challenges")
     )
-
-    if not fault_conf_data.empty:
-        fault_conf_chart = (
-            alt.Chart(
-                fault_conf_data
-            )
-            .mark_bar(
-                cornerRadiusTopRight=6,
-                cornerRadiusBottomRight=6,
-            )
+    with right2:
+        st.subheader("Challenges by Conference")
+        chart = (
+            alt.Chart(conference_data)
+            .mark_bar(cornerRadiusTopRight=6, cornerRadiusBottomRight=6)
             .encode(
-                x=alt.X(
-                    "FAULTS:Q",
-                    title=None,
-                ),
-                y=alt.Y(
-                    "Conference:N",
-                    sort="-x",
-                    title=None,
-                ),
-                color=alt.value(
-                    MINT
-                ),
-                tooltip=[
-                    "Conference:N",
-                    "FAULTS:Q",
-                ],
+                x=alt.X("Challenges:Q", title=None),
+                y=alt.Y("Conference:N", sort="-x", title=None),
+                color=alt.value(MINT),
+                tooltip=["Conference:N", "Challenges:Q"],
             )
-            .properties(
-                height=max(
-                    280,
-                    42
-                    * len(
-                        fault_conf_data
-                    ),
-                )
-            )
+            .properties(height=max(220, 38 * len(conference_data)))
         )
+        st.altair_chart(chart, use_container_width=True)
 
-        st.altair_chart(
-            fault_conf_chart,
-            use_container_width=True,
-        )
-
-    else:
-        st.caption(
-            "No FAULT records match the current filters."
-        )
-
-
-# ============================================================
-# FAVORITES
-# ============================================================
-
-st.write("")
-
-render_section_label(
-    "Favorites"
-)
-
-starred_series = (
-    filtered[
-        "is_starred"
-    ]
-    .fillna(False)
-    .astype(bool)
-)
-
-starred_count = int(
-    starred_series.sum()
-)
-
-fav1, fav2, fav3, fav4 = st.columns(
-    4
-)
-
-with fav1:
-    render_kpi(
-        "Starred Plays",
-        f"{starred_count:,}",
-        "Favorites in current view",
-        "purple",
-    )
-
-for column, play_type, label, color in [
-    (fav2, "Challenge", "Starred Challenges", "blue"),
-    (fav3, "POI", "Starred POIs", "purple"),
-    (fav4, "Fault", "Starred FAULTS", "green"),
-]:
-    with column:
-        type_starred = int(
-            (
-                (
-                    filtered[
-                        "dashboard_play_type"
-                    ]
-                    == play_type
-                )
-                & starred_series
-            ).sum()
-        )
-
-        render_kpi(
-            label,
-            f"{type_starred:,}",
-            "Favorites",
-            color,
-        )
+starred = filtered[filtered["is_starred"] == True].copy()  # noqa: E712
+if not starred.empty:
+    render_section_label("Starred Plays")
+    display = starred[[
+        "match_date", "conference_display", "match_name", "type",
+        "set_number", "score", "status",
+    ]].copy()
+    display.columns = ["Date", "Conference", "Match", "Type", "Set", "Score", "Status"]
+    st.dataframe(display, use_container_width=True, hide_index=True)

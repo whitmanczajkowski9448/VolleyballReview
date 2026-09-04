@@ -140,17 +140,14 @@ def challenge_info_text(
     play,
     video_angles,
 ):
-    changed_value = play.get(
-        "crs_original_fault_changed"
-    )
+    judgment = clean_text(play.get("referee_judgment"))
+    if not judgment:
+        legacy = play.get("review_decision_correct")
+        judgment = "Correct" if legacy is True else "Incorrect" if legacy is False else "—"
 
-    changed_text = (
-        "Yes"
-        if changed_value is True
-        else "No"
-        if changed_value is False
-        else "—"
-    )
+    length_value = play.get("challenge_length_seconds")
+    if length_value is None:
+        length_value = play.get("dvsport_challenge_length_seconds")
 
     lines = [
         "NCAA WOMEN'S VOLLEYBALL CHALLENGE REVIEW",
@@ -162,121 +159,23 @@ def challenge_info_text(
         f"Set: {clean_value(play.get('set_number'))}",
         f"Score: {clean_value(play.get('score'))}",
         f"Challenging Team: {clean_value(play.get('challenging_team'))}",
-        f"DV Sport Challenge Type: {clean_value(play.get('challenge_type'))}",
+        f"DV Sport Category: {clean_value(play.get('dvsport_crs_category') or play.get('challenge_type'))}",
+        f"DV Sport Result: {clean_value(play.get('challenge_result'))}",
         "",
-        "CRS REVIEW INFORMATION",
-        "-" * 24,
-        f"CRS Category: {clean_value(play.get('crs_category'))}",
-        f"Touch Context: {clean_value(play.get('crs_touch_context'))}",
-        f"Original Decision: {clean_value(play.get('crs_original_decision'))}",
-        (
-            "Challenge Outcome: "
-            + clean_value(
-                play.get("crs_outcome")
-                or play.get("challenge_result")
-            )
-        ),
-        f"Original Fault Decision Changed: {changed_text}",
-        (
-            "Challenge Length: "
-            + format_seconds(
-                play.get(
-                    "challenge_length_seconds"
-                )
-            )
-        ),
-        (
-            "Review Status: "
-            + clean_value(
-                play.get("review_status"),
-                "Not Viewed",
-            )
-        ),
-        (
-            "Record Use: "
-            + (
-                "UNUSABLE — EXCLUDED FROM ANALYSIS / REPORTS"
-                if play.get(
-                    "is_unusable"
-                ) is True
-                else "Usable"
-            )
-        ),
-        (
-            "Unusable Reason: "
-            + clean_value(
-                play.get(
-                    "unusable_reason"
-                )
-            )
-        ),
-        (
-            "Unusable Details: "
-            + clean_value(
-                play.get(
-                    "unusable_notes"
-                )
-            )
-        ),
-        "",
-        "REVIEW TAGS",
-        "-" * 11,
-        (
-            "Review Decision: "
-            + (
-                "Correct"
-                if play.get(
-                    "review_decision_correct"
-                ) is True
-                else "Incorrect"
-                if play.get(
-                    "review_decision_correct"
-                ) is False
-                else "Not Tagged"
-            )
-        ),
-        (
-            "Use for Training: "
-            + (
-                "Yes"
-                if play.get(
-                    "use_for_training"
-                ) is True
-                else "No"
-            )
-        ),
-        (
-            "Who Was Involved: "
-            + (
-                ", ".join(
-                    play.get(
-                        "involved_roles"
-                    )
-                    or []
-                )
-                or "Not Tagged"
-            )
-        ),
-        (
-            "Names / Details: "
-            + clean_value(
-                play.get(
-                    "involved_people"
-                )
-            )
-        ),
-        "",
-        "REVIEWER NOTES",
-        "-" * 14,
-        clean_value(
-            play.get("reviewer_notes")
-        ),
+        "VOLLEYREVIEW CLASSIFICATION",
+        "-" * 28,
+        f"Challenge Category: {clean_value(play.get('ncaa_challenge_category') or play.get('crs_category'))}",
+        f"Original Call: {clean_value(play.get('crs_original_decision'))}",
+        f"Challenge Outcome: {clean_value(play.get('crs_outcome') or play.get('challenge_result'))}",
+        f"Fault Changed / New Fault: {clean_value(play.get('challenge_outcome_detail'))}",
+        f"Referee Judgment: {judgment}",
+        f"Challenge Length: {format_seconds(length_value)}",
+        f"Review Status: {clean_value(play.get('review_status'), 'Not Viewed')}",
+        f"Starred: {'Yes' if play.get('is_starred') is True else 'No'}",
         "",
         "WEEKLY COORDINATOR NOTE",
         "-" * 23,
-        clean_value(
-            play.get("weekly_summary_note")
-        ),
+        clean_value(play.get("weekly_summary_note")),
         "",
         "VIDEO ANGLES INCLUDED",
         "-" * 21,
@@ -285,35 +184,22 @@ def challenge_info_text(
     usable_angles = [
         angle
         for angle in video_angles
-        if has_usable_video_url(
-            angle.get("video_url")
-        )
+        if has_usable_video_url(angle.get("video_url"))
     ]
 
     if usable_angles:
-        for index, angle in enumerate(
-            usable_angles,
-            start=1,
-        ):
+        for index, angle in enumerate(usable_angles, start=1):
             lines.append(
-                f"{index}. "
-                f"{clean_value(angle.get('angle_name'), 'Video')}"
+                f"{index}. {clean_value(angle.get('angle_name'), 'Video')}"
             )
     else:
         lines.append("None")
 
-    lines.extend(
-        [
-            "",
-            f"DV Sport ID: {clean_value(play.get('dvsport_id'))}",
-            f"Database Play ID: {clean_value(play.get('id'))}",
-            "",
-            (
-                "Generated from the NCAA Women's Volleyball "
-                "review application."
-            ),
-        ]
-    )
+    lines.extend([
+        "",
+        f"DV Sport ID: {clean_value(play.get('dvsport_id'))}",
+        f"Database Play ID: {clean_value(play.get('id'))}",
+    ])
 
     return "\n".join(lines)
 
@@ -487,31 +373,24 @@ def build_play_signature(play):
             "score",
             "challenging_team",
             "challenge_type",
+            "dvsport_crs_category",
             "challenge_result",
             "review_status",
-            "reviewer_notes",
             "weekly_summary_note",
+            "ncaa_challenge_category",
             "crs_category",
-            "crs_touch_context",
             "crs_original_decision",
             "crs_outcome",
-            "crs_original_fault_changed",
+            "challenge_outcome_detail",
             "challenge_length_seconds",
+            "dvsport_challenge_length_seconds",
+            "referee_judgment",
             "review_decision_correct",
-            "use_for_training",
-            "involved_roles",
-            "involved_people",
-            "is_unusable",
-            "unusable_reason",
-            "unusable_notes",
+            "is_starred",
         ]
     }
 
-    return tuple(
-        sorted(
-            fields.items()
-        )
-    )
+    return tuple(sorted(fields.items()))
 
 
 def build_angle_signature(video_angles):

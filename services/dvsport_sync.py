@@ -33,7 +33,7 @@ SEASON_END_DATE = date(2026, 12, 31)
 DEFAULT_END_DATE = min(date.today(), SEASON_END_DATE)
 DEFAULT_START_DATE = max(
     SEASON_START_DATE,
-    DEFAULT_END_DATE - timedelta(days=7),
+    DEFAULT_END_DATE - timedelta(days=2),
 )
 
 TARGET_CONFERENCES = {
@@ -2324,7 +2324,7 @@ def extract_challenges_from_playlist(
                 review_result
                 or None,
 
-            "challenge_length_seconds":
+            "dvsport_challenge_length_seconds":
                 to_int(
                     fields.get(
                         "REVIEW TIME"
@@ -2477,7 +2477,7 @@ def extract_pois_from_playlist(
             "challenge_result":
                 None,
 
-            "challenge_length_seconds":
+            "dvsport_challenge_length_seconds":
                 None,
         }
 
@@ -3103,7 +3103,7 @@ def extract_faults_from_playlist(
             "challenge_result":
                 None,
 
-            "challenge_length_seconds":
+            "dvsport_challenge_length_seconds":
                 None,
         }
 
@@ -3852,6 +3852,15 @@ def upsert_play(
             "updated",
             matched_by_secondary_identity,
             existing_match_count,
+        )
+
+    if (
+        clean_text(database_record.get("play_type")).upper() == "CHALLENGE"
+        and database_record.get("challenge_length_seconds") is None
+        and database_record.get("dvsport_challenge_length_seconds") is not None
+    ):
+        database_record["challenge_length_seconds"] = (
+            database_record.get("dvsport_challenge_length_seconds")
         )
 
     response = (

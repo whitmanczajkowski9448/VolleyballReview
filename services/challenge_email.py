@@ -649,22 +649,6 @@ def email_body(
                     ),
                 ),
                 (
-                    "Play category",
-                    clean_line_value(
-                        play.get(
-                            "play_category"
-                        )
-                    ),
-                ),
-                (
-                    "Touch context",
-                    clean_line_value(
-                        play.get(
-                            "crs_touch_context"
-                        )
-                    ),
-                ),
-                (
                     "Original decision",
                     clean_line_value(
                         play.get(
@@ -676,20 +660,6 @@ def email_body(
         )
 
     if include_result:
-        changed_value = play.get(
-            "crs_original_fault_changed"
-        )
-
-        changed_text = (
-            "Yes"
-            if changed_value
-            is True
-            else "No"
-            if changed_value
-            is False
-            else "—"
-        )
-
         add_section(
             lines,
             "Challenge Result",
@@ -697,17 +667,15 @@ def email_body(
                 (
                     "Outcome",
                     clean_line_value(
-                        play.get(
-                            "crs_outcome"
-                        )
-                        or play.get(
-                            "challenge_result"
-                        )
+                        play.get("crs_outcome")
+                        or play.get("challenge_result")
                     ),
                 ),
                 (
-                    "Original fault decision changed",
-                    changed_text,
+                    "Fault changed / new fault",
+                    clean_line_value(
+                        play.get("challenge_outcome_detail")
+                    ),
                 ),
             ],
         )
@@ -736,78 +704,27 @@ def email_body(
             )
 
     if include_review_tags:
-        decision_value = play.get(
-            "review_decision_correct"
-        )
-
-        decision_text = (
-            "Correct"
-            if decision_value
-            is True
-            else "Incorrect"
-            if decision_value
-            is False
-            else "Not tagged"
-        )
-
-        involved_roles = (
-            play.get(
-                "involved_roles"
+        judgment = clean_text(play.get("referee_judgment"))
+        if not judgment:
+            legacy = play.get("review_decision_correct")
+            judgment = (
+                "Correct" if legacy is True
+                else "Incorrect" if legacy is False
+                else "Not tagged"
             )
-            or []
-        )
-
-        if not isinstance(
-            involved_roles,
-            list,
-        ):
-            involved_roles = [
-                item.strip()
-                for item
-                in clean_text(
-                    involved_roles
-                ).split(
-                    ","
-                )
-                if item.strip()
-            ]
 
         add_section(
             lines,
             "Review Tags",
             [
+                ("Referee judgment", judgment),
                 (
-                    "Review decision",
-                    decision_text,
+                    "Starred",
+                    "Yes" if play.get("is_starred") is True else "No",
                 ),
                 (
-                    "Use for training",
-                    (
-                        "Yes"
-                        if play.get(
-                            "use_for_training"
-                        )
-                        is True
-                        else "No"
-                    ),
-                ),
-                (
-                    "Who was involved",
-                    (
-                        ", ".join(
-                            involved_roles
-                        )
-                        if involved_roles
-                        else "Not tagged"
-                    ),
-                ),
-                (
-                    "Names / details",
-                    clean_line_value(
-                        play.get(
-                            "involved_people"
-                        )
-                    ),
+                    "Review status",
+                    clean_line_value(play.get("review_status") or "Not Viewed"),
                 ),
             ],
         )
@@ -1234,14 +1151,7 @@ def challenge_email_dialog(
             ),
         )
 
-        include_reviewer_notes = st.checkbox(
-            "Reviewer notes",
-            value=False,
-            key=(
-                f"{key_prefix}_notes_"
-                f"{play['id']}"
-            ),
-        )
+        include_reviewer_notes = False
 
         include_weekly_note = st.checkbox(
             "Coordinator note",

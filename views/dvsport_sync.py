@@ -27,10 +27,7 @@ require_admin()
 
 render_page_header(
     "DV Sport Sync",
-    (
-        "Pull all 2026 challenges, plays of interest, and FAULTS from "
-        "DV Sport and safely refresh the review database."
-    ),
+    "Refresh Challenge, POI, and Fault data from DV Sport.",
     eyebrow="NCAA WVB • DATA CONNECTION",
 )
 
@@ -93,10 +90,6 @@ with st.container(
             ),
         )
 
-    st.caption(
-        "Current scope: Big Ten • MVC • MAC • "
-        "ALL Challenges • ALL Plays of Interest • ALL FAULTS"
-    )
 
     if cookie_configured:
         st.success(
@@ -168,43 +161,8 @@ with st.container(
             "Start Date must be on or before End Date."
         )
 
-    st.caption(
-        (
-            "The selected dates are inclusive and apply to "
-            "Challenges, POIs, and FAULTS. Existing database records outside "
-            "this range are not deleted or changed."
-        )
-    )
 
 
-# ============================================================
-# EXPLANATION
-# ============================================================
-
-render_section_label(
-    "What This Sync Does"
-)
-
-st.info(
-    (
-        "Challenges are pulled from each conference's "
-        "REVIEWS / REVIEWS BY GAME library. POIs are pulled "
-        "from each conference's POI library. FAULTS are pulled "
-        "from each conference's FAULTS library. Every .DVPLAYLIST beneath "
-        "the FAULTS folder is checked, with match/date recovered from "
-        "playlist metadata or media URLs when needed. "
-        "Before writing, the sync matches against existing database "
-        "records by stable play identity and DV Sport media, so rerunning "
-        "the same dates does not create duplicate Challenges, POIs, or "
-        "FAULTS. Every imported play is then matched back to its FULL GAME "
-        "playlist by conference, date, match, and PLAY number. FULL GAME is "
-        "always consulted for the complete camera set and additional DV Sport "
-        "play metadata; specialized Challenge/POI/FAULT cutups remain the "
-        "event-tag source. Named video URLs are stored directly on the play "
-        "row in plays.video_urls. Existing reviewer work, NCAA classifications, "
-        "favorites, and notes are preserved."
-    )
-)
 
 
 # ============================================================
@@ -491,47 +449,7 @@ if run_sync:
                 f"{result_count('plays_updated'):,}",
             )
 
-        r6, r7, r8, r9, r10 = st.columns(
-            5
-        )
-
-        with r6:
-            st.metric(
-                "Challenge Playlists",
-                f"{result_count('challenge_playlists'):,}",
-            )
-
-        with r7:
-            st.metric(
-                "POI Match Groups",
-                f"{result_count('poi_match_groups'):,}",
-            )
-
-        with r8:
-            st.metric(
-                "FAULT Match Groups",
-                f"{result_count('fault_match_groups'):,}",
-            )
-
-        with r9:
-            st.metric(
-                "POI Combined",
-                f"{result_count('poi_combined_groups'):,}",
-                "Used combined POIS",
-                delta_color="off",
-            )
-
-        with r10:
-            st.metric(
-                "POI Fallback",
-                f"{result_count('poi_fallback_groups'):,}",
-                "Used individual POIs",
-                delta_color="off",
-            )
-
-        a1, a2, a3 = st.columns(
-            3
-        )
+        a1, a2, a3 = st.columns(3)
 
         with a1:
             st.metric(
@@ -543,113 +461,12 @@ if run_sync:
             st.metric(
                 "Video Clips Attached",
                 f"{result_count('video_clips_attached'):,}",
-                "Stored directly on play rows",
-                delta_color="off",
             )
 
         with a3:
             st.metric(
                 "Elapsed",
                 f"{result_float('elapsed_seconds'):.1f}s",
-            )
-
-        st.write("")
-        render_section_label(
-            "Full Game Coverage"
-        )
-
-        g1, g2, g3, g4 = st.columns(
-            4
-        )
-
-        with g1:
-            st.metric(
-                "Full Game Match Groups",
-                f"{result_count('full_game_match_groups'):,}",
-            )
-
-        with g2:
-            st.metric(
-                "Plays Checked",
-                f"{result_count('full_game_plays_checked'):,}",
-                "Every imported play",
-                delta_color="off",
-            )
-
-        with g3:
-            st.metric(
-                "Full Game Plays Matched",
-                f"{result_count('full_game_plays_matched'):,}",
-            )
-
-        with g4:
-            st.metric(
-                "Full Game Angles Found",
-                f"{result_count('full_game_angles_found'):,}",
-            )
-
-        g5, g6, g7, g8 = st.columns(
-            4
-        )
-
-        with g5:
-            st.metric(
-                "Playlist Missing",
-                f"{result_count('full_game_playlist_missing'):,}",
-            )
-
-        with g6:
-            st.metric(
-                "PLAY # Missing",
-                f"{result_count('full_game_play_number_missing'):,}",
-            )
-
-        with g7:
-            st.metric(
-                "PLAY Not In Full Game",
-                f"{result_count('full_game_play_missing'):,}",
-            )
-
-        with g8:
-            st.metric(
-                "Matched With 0 Angles",
-                f"{result_count('full_game_zero_angle_plays'):,}",
-            )
-
-        unresolved_full_game = (
-            result_count("full_game_playlist_missing")
-            + result_count("full_game_play_number_missing")
-            + result_count("full_game_play_missing")
-            + result_count("full_game_zero_angle_plays")
-        )
-
-        if unresolved_full_game:
-            st.warning(
-                f"{unresolved_full_game:,} play(s) did not receive complete "
-                "FULL GAME media enrichment. The play records were still "
-                "imported, and dvsport_metadata.full_game_lookup records the "
-                "reason for each unresolved play."
-            )
-        else:
-            st.success(
-                "Every imported play with a usable PLAY number matched its "
-                "FULL GAME source with no unresolved media lookups."
-            )
-
-        existing_duplicate_rows = result_count(
-            "existing_duplicate_rows_detected"
-        )
-
-        if existing_duplicate_rows:
-            st.warning(
-                (
-                    f"This sync prevented new duplicate inserts and also "
-                    f"detected {existing_duplicate_rows:,} duplicate row"
-                    f"{'s' if existing_duplicate_rows != 1 else ''} already "
-                    "present from earlier syncs. Those older duplicate rows "
-                    "were left untouched so reviewer/tagging data is not "
-                    "deleted automatically."
-                )
             )
 
         errors = result.get("errors", []) or []

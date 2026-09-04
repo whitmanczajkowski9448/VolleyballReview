@@ -1,120 +1,190 @@
-NCAA_CHALLENGE_CATEGORIES = [
+CHALLENGE_CATEGORIES = [
     "",
-    "Ball in / out",
-    "Ball contact / touch",
-    "Net fault / antenna",
-    "Service foot fault",
-    "Back-row attack",
-    "Libero front-zone set / illegal attack",
-    "Center-line fault",
-    "Other",
+    "Touch",
+    "In/Out",
+    "Net",
+    "Attack Line",
+    "Service Line / CenterLine",
 ]
 
-TOUCH_CONTEXTS = [
-    "",
-    "IN/OUT",
-    "BRA/BRB/RO",
-    "2 or 4 HITS",
-]
-
-ORIGINAL_DECISIONS = {
-    "Ball in / out": [
-        "",
-        "Ball in",
-        "Ball out",
-        "Successful pancake",
-        "Unsuccessful pancake",
-    ],
-    "Ball contact / touch": [
-        "",
-        "Touch",
-        "No touch",
-    ],
-    "Net fault / antenna": [
-        "",
-        "Net fault",
-        "No net fault",
-        "Antenna fault",
-        "No antenna fault",
-    ],
-    "Service foot fault": [
-        "",
-        "Foot fault",
-        "No foot fault",
-    ],
-    "Back-row attack": [
-        "",
-        "Back-row attack",
-        "Not a back-row attack",
-    ],
-    "Libero front-zone set / illegal attack": [
-        "",
-        "Libero in the front zone",
-        "Libero not in the front zone",
-        "Illegal attack",
-        "Legal attack",
-    ],
-    "Center-line fault": [
-        "",
-        "Center-line fault",
-        "No center-line fault",
-    ],
-    "Other": [
-        "",
-        "Fault",
-        "No fault",
-    ],
-    "": [""],
+CHALLENGE_CATEGORY_LABELS = {
+    "": "— Select —",
+    "Touch": "1 — Touch",
+    "In/Out": "2 — In/Out",
+    "Net": "3 — Net",
+    "Attack Line": "4 — Attack Line",
+    "Service Line / CenterLine": "5 — Service Line / CenterLine",
 }
 
-CRS_OUTCOMES = [
+ORIGINAL_CALLS = {
+    "Touch": [
+        "Touch",
+        "No Touch",
+    ],
+    "In/Out": [
+        "Ball In",
+        "Ball Out",
+        "Successful Pancake",
+        "Unsuccessful Pancake",
+    ],
+    "Net": [
+        "Net Fault",
+        "No Net Fault",
+    ],
+    "Attack Line": [
+        "Back-Row Attack",
+        "Not a Back-Row Attack",
+        "Libero in the Front Zone",
+        "Libero not in the Front Zone",
+    ],
+    "Service Line / CenterLine": [
+        "Foot Fault",
+        "No Foot Fault",
+        "Center Line Fault",
+        "No Center Line Fault",
+    ],
+    "": [],
+}
+
+CHALLENGE_OUTCOMES = [
     "",
-    "Original outcome confirmed",
-    "Original outcome reversed",
-    "Original outcome stands",
-    "Mechanical or video failure",
+    "Confirmed",
+    "Reversed",
+    "Stands",
+    "Mechanical Failure",
 ]
 
-PLAY_CATEGORIES = [
+REFEREE_JUDGMENTS = [
     "",
-    "Ball in / out",
-    "Touch / no touch",
-    "Pancake / floor contact",
-    "Caught / thrown ball",
-    "Double contact / successive contacts",
-    "Four hits",
-    "Assisted hit",
-    "Back-row attack",
-    "Libero front-zone set / illegal attack",
-    "Illegal attack of serve",
-    "Illegal block — back-row / Libero",
-    "Blocking the serve",
-    "Reaching over / illegal contact over opponent court",
-    "Blocking interference / premature block",
-    "Net fault",
-    "Antenna fault",
-    "Center-line fault",
-    "Interference at / under net",
-    "Service foot fault",
-    "Illegal service",
-    "Service screen",
-    "Position fault / overlap",
-    "Rotation fault / wrong server (out of rotation)",
-    "Ball outside antenna / crossing space",
-    "Ball under net",
-    "Illegal play from nonplaying area",
-    "Illegal Libero replacement",
-    "Illegal substitution / excessive team entry",
-    "Lineup / roster / scoring issue",
-    "Delay / procedural issue",
-    "Misconduct / sanction",
-    "Inadvertent whistle / replay",
-    "Simultaneous / double fault",
-    "Other",
+    "Correct",
+    "Incorrect",
+    "Unclear",
 ]
 
-PLAY_TYPES = [
-    "Challenge",
-    "POI",
-    "Fault",
+REVIEW_STATUS_CHOICES = [
+    "",
+    "Needs Additional Review",
+    "Complete",
 ]
+
+NEW_FAULT_OPTIONS = []
+for _category in CHALLENGE_CATEGORIES:
+    for _call in ORIGINAL_CALLS.get(_category, []):
+        if _call not in NEW_FAULT_OPTIONS:
+            NEW_FAULT_OPTIONS.append(_call)
+
+
+def clean_text(value):
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def normalize_challenge_category(value):
+    text = clean_text(value)
+    upper = text.upper()
+
+    if not text:
+        return ""
+    if text in CHALLENGE_CATEGORIES:
+        return text
+    if "TOUCH" in upper or "CONTACT" in upper:
+        return "Touch"
+    if "IN / OUT" in upper or "IN/OUT" in upper or "BALL IN" in upper or "BALL OUT" in upper or "PANCAKE" in upper:
+        return "In/Out"
+    if "NET" in upper or "ANTENNA" in upper:
+        return "Net"
+    if "ATTACK LINE" in upper or "BACK-ROW" in upper or "BACK ROW" in upper or "LIBERO FRONT" in upper:
+        return "Attack Line"
+    if "SERVICE" in upper or "FOOT FAULT" in upper or "CENTER" in upper or "CENTRE" in upper or "CL FAULT" in upper:
+        return "Service Line / CenterLine"
+    return text
+
+
+def normalize_original_call(value):
+    text = clean_text(value)
+    if not text:
+        return ""
+
+    mapping = {
+        "touch": "Touch",
+        "no touch": "No Touch",
+        "ball in": "Ball In",
+        "ball out": "Ball Out",
+        "successful pancake": "Successful Pancake",
+        "unsuccessful pancake": "Unsuccessful Pancake",
+        "net fault": "Net Fault",
+        "no net fault": "No Net Fault",
+        "back-row attack": "Back-Row Attack",
+        "back row attack": "Back-Row Attack",
+        "not a back-row attack": "Not a Back-Row Attack",
+        "not a back row attack": "Not a Back-Row Attack",
+        "libero in the front zone": "Libero in the Front Zone",
+        "libero not in the front zone": "Libero not in the Front Zone",
+        "foot fault": "Foot Fault",
+        "no foot fault": "No Foot Fault",
+        "cl fault": "Center Line Fault",
+        "center-line fault": "Center Line Fault",
+        "center line fault": "Center Line Fault",
+        "no cl fault": "No Center Line Fault",
+        "no center-line fault": "No Center Line Fault",
+        "no center line fault": "No Center Line Fault",
+    }
+    return mapping.get(text.lower(), text)
+
+
+def normalize_outcome(value):
+    text = clean_text(value)
+    if not text:
+        return ""
+    upper = text.upper()
+    if "REVER" in upper:
+        return "Reversed"
+    if "CONFIRM" in upper:
+        return "Confirmed"
+    if "STAND" in upper or "INCONCLUSIVE" in upper:
+        return "Stands"
+    if "MECHANICAL" in upper or "VIDEO FAIL" in upper or "TECHNICAL" in upper:
+        return "Mechanical Failure"
+    return text
+
+
+def normalize_referee_judgment(value, legacy_boolean=None):
+    text = clean_text(value)
+    if text:
+        lower = text.lower()
+        if lower == "correct":
+            return "Correct"
+        if lower == "incorrect":
+            return "Incorrect"
+        if lower in {"unclear", "inconclusive"}:
+            return "Unclear"
+        return text
+    if legacy_boolean is True:
+        return "Correct"
+    if legacy_boolean is False:
+        return "Incorrect"
+    return ""
+
+
+def normalize_review_status(value):
+    text = clean_text(value)
+    if not text:
+        return "Not Viewed"
+    lower = text.lower()
+    if lower == "complete":
+        return "Complete"
+    if lower in {"needs review", "needs additional review"}:
+        return "Needs Additional Review"
+    if lower == "not viewed":
+        return "Not Viewed"
+    return text
+
+
+# Backward-compatible aliases for older imports.
+NCAA_CHALLENGE_CATEGORIES = CHALLENGE_CATEGORIES
+ORIGINAL_DECISIONS = ORIGINAL_CALLS
+CRS_OUTCOMES = CHALLENGE_OUTCOMES
+PLAY_TYPES = ["Challenge", "POI", "Fault"]
+TOUCH_CONTEXTS = [""]
+PLAY_CATEGORIES = [""]

@@ -657,10 +657,10 @@ def render_status_pill(
             icon="✅",
         )
 
-    elif status == "Needs Review":
+    elif status in {"Needs Review", "Needs Additional Review"}:
 
         st.warning(
-            "● Needs Review",
+            "● Needs Additional Review",
             icon="⚠️",
         )
 

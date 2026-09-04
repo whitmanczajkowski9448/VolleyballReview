@@ -5,16 +5,13 @@ from services.auth import (
     render_login,
     sign_out,
 )
+from services.public_share import render_public_challenge
 from services.ui import (
     inject_global_css,
     render_sidebar_brand,
     render_sidebar_footer,
 )
 
-
-# ============================================================
-# PAGE CONFIGURATION
-# ============================================================
 
 st.set_page_config(
     page_title="NCAA WVB Review",
@@ -23,17 +20,20 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-
-# ============================================================
-# GLOBAL DESIGN SYSTEM
-# ============================================================
-
 inject_global_css()
 
 
-# ============================================================
-# AUTHENTICATION
-# ============================================================
+# A signed challenge URL is intentionally available without login. The token
+# grants read-only access to one Challenge record only.
+public_challenge_token = str(
+    st.query_params.get("challenge", "")
+    or ""
+).strip()
+
+if public_challenge_token:
+    render_public_challenge(public_challenge_token)
+    st.stop()
+
 
 auth_user = refresh_auth_state()
 
@@ -41,18 +41,10 @@ if auth_user is None:
     render_login()
     st.stop()
 
-
-role = auth_user[
-    "role"
-]
-
+role = auth_user["role"]
 
 render_sidebar_brand()
 
-
-# ============================================================
-# PAGES AVAILABLE TO EVERY AUTHORIZED USER
-# ============================================================
 
 dashboard_page = st.Page(
     "views/dashboard.py",
@@ -61,13 +53,11 @@ dashboard_page = st.Page(
     default=True,
 )
 
-
 viewer_page = st.Page(
     "views/viewer.py",
     title="View Plays",
     icon=":material/slideshow:",
 )
-
 
 weekly_report_page = st.Page(
     "views/weekly_report.py",
@@ -75,18 +65,12 @@ weekly_report_page = st.Page(
     icon=":material/analytics:",
 )
 
-
 navigation_groups = {
     "REVIEW CENTER": [
         dashboard_page,
         viewer_page,
     ],
 }
-
-
-# ============================================================
-# ADMIN-ONLY PAGES
-# ============================================================
 
 if role == "admin":
     editor_page = st.Page(
@@ -107,54 +91,17 @@ if role == "admin":
         icon=":material/manage_accounts:",
     )
 
-    navigation_groups[
-        "REVIEW CENTER"
-    ].append(
-        editor_page
-    )
+    navigation_groups["REVIEW CENTER"].append(editor_page)
+    navigation_groups["REPORTING"] = [weekly_report_page]
+    navigation_groups["SYSTEM"] = [dvsport_sync_page, manage_users_page]
 
-    navigation_groups[
-        "REPORTING"
-    ] = [
-        weekly_report_page,
-    ]
-
-    navigation_groups[
-        "SYSTEM"
-    ] = [
-        dvsport_sync_page,
-        manage_users_page,
-    ]
-
-
-navigation = st.navigation(
-    navigation_groups
-)
-
-
-# ============================================================
-# SIGNED-IN USER / LOGOUT
-# ============================================================
+navigation = st.navigation(navigation_groups)
 
 with st.sidebar:
     st.divider()
-
-    role_label = (
-        "Admin"
-        if role == "admin"
-        else "Viewer"
-    )
-
-    st.caption(
-        (
-            f"Signed in as "
-            f"{auth_user.get('email', '')}"
-        )
-    )
-
-    st.caption(
-        f"Access: {role_label}"
-    )
+    role_label = "Admin" if role == "admin" else "Viewer"
+    st.caption(f"Signed in as {auth_user.get('email', '')}")
+    st.caption(f"Access: {role_label}")
 
     if st.button(
         "Log Out",
@@ -164,7 +111,5 @@ with st.sidebar:
         sign_out()
         st.rerun()
 
-
 render_sidebar_footer()
-
 navigation.run()
