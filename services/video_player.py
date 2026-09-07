@@ -6,7 +6,9 @@ import re
 import streamlit.components.v1 as components
 
 
-DEFAULT_FRAME_RATE = 30.0
+# Fallback only. Native playback uses the source cadence; frame stepping is
+# replaced with measured frame timing as soon as the browser reports it.
+DEFAULT_FRAME_RATE = 60.0
 
 
 def _clean_text(value):

@@ -488,261 +488,6 @@ else:
 # STREAMLINED TAGGING
 # ============================================================
 
-save_message_key = f"save_message_{play_id}"
-if st.session_state.get(save_message_key):
-    st.success(st.session_state[save_message_key])
-
-category_key = f"category_{play_id}"
-original_key = f"original_{play_id}"
-outcome_key = f"outcome_{play_id}"
-detail_key = f"outcome_detail_{play_id}"
-length_key = f"length_{play_id}"
-judgment_key = f"judgment_{play_id}"
-star_key = f"star_{play_id}"
-weekly_key = f"weekly_{play_id}"
-status_key = f"status_{play_id}"
-
-stored_category = normalize_challenge_category(
-    play.get("ncaa_challenge_category") or play.get("crs_category")
-)
-initialize(category_key, stored_category)
-
-if is_challenge:
-    render_section_label("Challenge Review")
-    st.caption("Choose the Challenge Category first; the remaining tags save together.")
-    category = st.selectbox(
-        "Challenge Category",
-        CHALLENGE_CATEGORIES,
-        key=category_key,
-        format_func=lambda value: CHALLENGE_CATEGORY_LABELS.get(value, value or "— Select —"),
-    )
-else:
-    category = ""
-
-stored_original = normalize_original_call(play.get("crs_original_decision"))
-original_options = [""] + list(ORIGINAL_CALLS.get(category, []))
-if stored_original and stored_original not in original_options:
-    original_options.append(stored_original)
-initialize(original_key, stored_original if stored_original in original_options else "")
-if st.session_state.get(original_key) not in original_options:
-    st.session_state[original_key] = ""
-
-stored_outcome = normalize_outcome(play.get("crs_outcome") or play.get("challenge_result"))
-initialize(outcome_key, stored_outcome if stored_outcome in CHALLENGE_OUTCOMES else "")
-if st.session_state.get(outcome_key) not in CHALLENGE_OUTCOMES:
-    st.session_state[outcome_key] = ""
-
-stored_detail = clean_text(play.get("challenge_outcome_detail"))
-if not stored_detail and play.get("crs_original_fault_changed") is not None:
-    stored_detail = "Yes" if play.get("crs_original_fault_changed") is True else "No"
-if not stored_detail and stored_outcome in {"Confirmed", "Stands"}:
-    stored_detail = "No"
-detail_options = [""] + ["No", "Yes"] + [x for x in NEW_FAULT_OPTIONS if x not in {"No", "Yes"}]
-if stored_detail and stored_detail not in detail_options:
-    detail_options.append(stored_detail)
-initialize(detail_key, stored_detail)
-
-stored_judgment = normalize_referee_judgment(
-    play.get("referee_judgment"),
-    play.get("review_decision_correct"),
-)
-initialize(judgment_key, stored_judgment if stored_judgment in REFEREE_JUDGMENTS else "")
-
-initialize(length_key, seconds_to_time(challenge_length_value(play)))
-initialize(star_key, bool(play.get("is_starred")))
-initialize(weekly_key, clean_text(play.get("weekly_summary_note")))
-
-stored_status = normalize_review_status(play.get("review_status"))
-status_seed = "" if stored_status == "Not Viewed" else stored_status
-initialize(status_key, status_seed if status_seed in REVIEW_STATUS_CHOICES else "")
-
-with st.form(
-    key=f"review_form_{play_id}",
-    clear_on_submit=False,
-    border=False,
-):
-    if is_challenge:
-        row1, row2 = st.columns(2)
-        with row1:
-            original_call = st.selectbox(
-                "Original Call",
-                original_options,
-                key=original_key,
-                format_func=lambda value: value or "— Select —",
-            )
-        with row2:
-            outcome = st.selectbox(
-                "Challenge Outcome",
-                CHALLENGE_OUTCOMES,
-                key=outcome_key,
-                format_func=lambda value: value or "— Select —",
-            )
-
-        row3, row4 = st.columns(2)
-        with row3:
-            outcome_detail = st.selectbox(
-                "Fault Changed / New Fault",
-                detail_options,
-                key=detail_key,
-                format_func=lambda value: value or "— Select —",
-                help=(
-                    "Confirmed/Stands: choose No or Yes for whether the original fault changed. "
-                    "Reversed: choose the new fault."
-                ),
-            )
-        with row4:
-            challenge_length = st.text_input(
-                "Challenge Length (mm:ss)",
-                key=length_key,
-                placeholder="1:24",
-                help="You may also enter total seconds, such as 84.",
-            )
-
-        judgment = st.selectbox(
-            "Referee Judgment",
-            REFEREE_JUDGMENTS,
-            key=judgment_key,
-            format_func=lambda value: value or "— Select —",
-        )
-    else:
-        original_call = clean_text(play.get("crs_original_decision"))
-        outcome = normalize_outcome(play.get("crs_outcome") or play.get("challenge_result"))
-        outcome_detail = clean_text(play.get("challenge_outcome_detail"))
-        challenge_length = seconds_to_time(challenge_length_value(play))
-        judgment = normalize_referee_judgment(
-            play.get("referee_judgment"), play.get("review_decision_correct")
-        )
-
-    st.divider()
-    star_col, status_col = st.columns([1, 2])
-    with star_col:
-        is_starred = st.checkbox("★ Star", key=star_key)
-    with status_col:
-        review_status_choice = st.selectbox(
-            "Review Status",
-            REVIEW_STATUS_CHOICES,
-            key=status_key,
-            format_func=lambda value: "Not Viewed (unmarked)" if not value else value,
-        )
-
-    weekly_summary_note = st.text_area(
-        "Weekly Summary Note",
-        key=weekly_key,
-        height=110,
-        placeholder="Only add a note when this challenge needs coordinator attention.",
-    )
-
-    b1, b2 = st.columns([1, 1.25])
-    with b1:
-        save_clicked = st.form_submit_button(
-            "Save Review",
-            use_container_width=True,
-        )
-    with b2:
-        save_next_clicked = st.form_submit_button(
-            "Save & Next →",
-            type="primary",
-            use_container_width=True,
-            disabled=next_play_id is None,
-        )
-
-
-def save_current_review():
-    length_seconds = parse_length(challenge_length)
-    if clean_text(challenge_length) and length_seconds is None:
-        st.error("Challenge Length must be mm:ss (for example 1:24) or total seconds.")
-        return False
-
-    # Preserve the existing database status value for compatibility while the UI
-    # uses the clearer "Needs Additional Review" label.
-    status_to_save = (
-        "Needs Review"
-        if review_status_choice == "Needs Additional Review"
-        else (review_status_choice or "Not Viewed")
-    )
-
-    if is_challenge:
-        valid_calls = ORIGINAL_CALLS.get(category, [])
-        if original_call and original_call not in valid_calls:
-            st.error("The Original Call does not match the selected Challenge Category.")
-            return False
-
-        if status_to_save == "Complete":
-            missing = []
-            if not category:
-                missing.append("Challenge Category")
-            if not original_call:
-                missing.append("Original Call")
-            if not outcome:
-                missing.append("Challenge Outcome")
-            if not judgment:
-                missing.append("Referee Judgment")
-            if missing:
-                st.error("Complete challenges require: " + ", ".join(missing) + ".")
-                return False
-
-        detail_to_save = clean_text(outcome_detail)
-        changed_to_save = None
-
-        if outcome in {"Confirmed", "Stands"}:
-            if not detail_to_save:
-                detail_to_save = "No"
-            if detail_to_save not in {"No", "Yes"}:
-                st.error("For Confirmed or Stands, Fault Changed / New Fault must be No or Yes.")
-                return False
-            changed_to_save = detail_to_save == "Yes"
-
-        elif outcome == "Reversed":
-            if not detail_to_save or detail_to_save in {"No", "Yes"}:
-                st.error("For a Reversed challenge, choose the new fault in Fault Changed / New Fault.")
-                return False
-
-        elif outcome == "Mechanical Failure":
-            detail_to_save = None
-
-        if judgment == "Correct":
-            legacy_accuracy = True
-        elif judgment == "Incorrect":
-            legacy_accuracy = False
-        else:
-            legacy_accuracy = None
-
-        update_data = {
-            "ncaa_challenge_category": category or None,
-            "crs_original_decision": original_call or None,
-            "crs_outcome": outcome or None,
-            "challenge_outcome_detail": detail_to_save or None,
-            "crs_original_fault_changed": changed_to_save,
-            "challenge_length_seconds": length_seconds,
-            "referee_judgment": judgment or None,
-            "review_decision_correct": legacy_accuracy,
-            "is_starred": bool(is_starred),
-            "weekly_summary_note": clean_text(weekly_summary_note) or None,
-            "review_status": status_to_save,
-        }
-    else:
-        update_data = {
-            "is_starred": bool(is_starred),
-            "weekly_summary_note": clean_text(weekly_summary_note) or None,
-            "review_status": status_to_save,
-        }
-
-    try:
-        (
-            supabase.table("plays")
-            .update(update_data)
-            .eq("id", play_id)
-            .execute()
-        )
-        st.session_state[save_message_key] = (
-            "✓ Saved " + datetime.now().strftime("%I:%M:%S %p")
-        )
-        return True
-    except Exception as exc:
-        st.error("The review could not be saved.")
-        st.exception(exc)
-        return False
-
 
 def move_to_play(target_play_id):
     if target_play_id is None or target_play_id not in filtered_play_by_id:
@@ -751,11 +496,355 @@ def move_to_play(target_play_id):
     st.session_state["editor_scroll_to_main_video"] = True
 
 
-if save_clicked:
-    if save_current_review():
-        st.rerun()
+fragment_decorator = getattr(st, "fragment", None) or getattr(
+    st, "experimental_fragment"
+)
 
-if save_next_clicked:
-    if save_current_review():
-        move_to_play(next_play_id)
-        st.rerun()
+
+@fragment_decorator
+def render_review_fragment():
+    """
+    Keep all tagging interactions isolated from the video workspace.
+
+    Changing Challenge Category reruns only this fragment so the dependent
+    Original Call options can be rebuilt immediately without dimming or
+    remounting the page/video player. Save & Next intentionally triggers the
+    one full-app rerun needed to move to the next play.
+    """
+    save_message_key = f"save_message_{play_id}"
+
+    category_key = f"category_{play_id}"
+    original_key = f"original_{play_id}"
+    outcome_key = f"outcome_{play_id}"
+    detail_key = f"outcome_detail_{play_id}"
+    length_key = f"length_{play_id}"
+    judgment_key = f"judgment_{play_id}"
+    star_key = f"star_{play_id}"
+    weekly_key = f"weekly_{play_id}"
+    status_key = f"status_{play_id}"
+
+    stored_category = normalize_challenge_category(
+        play.get("ncaa_challenge_category") or play.get("crs_category")
+    )
+    initialize(category_key, stored_category)
+
+    if is_challenge:
+        render_section_label("Challenge Review")
+        st.caption(
+            "Choose the Challenge Category. Original Call updates immediately "
+            "without reloading the video workspace."
+        )
+        category = st.selectbox(
+            "Challenge Category",
+            CHALLENGE_CATEGORIES,
+            key=category_key,
+            format_func=lambda value: CHALLENGE_CATEGORY_LABELS.get(
+                value,
+                value or "— Select —",
+            ),
+        )
+    else:
+        category = ""
+
+    stored_original = normalize_original_call(play.get("crs_original_decision"))
+
+    # These choices are intentionally determined locally from the selected
+    # NCAA category. Because this code runs inside a fragment, changing the
+    # category only redraws the tagging fragment—not the page or video player.
+    original_options = [""] + list(ORIGINAL_CALLS.get(category, []))
+
+    # Preserve an older/unrecognized stored value only while the category is
+    # still the stored category. If the reviewer changes categories, clear an
+    # incompatible Original Call immediately instead of carrying it forward.
+    if (
+        category == stored_category
+        and stored_original
+        and stored_original not in original_options
+    ):
+        original_options.append(stored_original)
+
+    initialize(
+        original_key,
+        stored_original if stored_original in original_options else "",
+    )
+    if st.session_state.get(original_key) not in original_options:
+        st.session_state[original_key] = ""
+
+    stored_outcome = normalize_outcome(
+        play.get("crs_outcome") or play.get("challenge_result")
+    )
+    initialize(
+        outcome_key,
+        stored_outcome if stored_outcome in CHALLENGE_OUTCOMES else "",
+    )
+    if st.session_state.get(outcome_key) not in CHALLENGE_OUTCOMES:
+        st.session_state[outcome_key] = ""
+
+    stored_detail = clean_text(play.get("challenge_outcome_detail"))
+    if not stored_detail and play.get("crs_original_fault_changed") is not None:
+        stored_detail = (
+            "Yes"
+            if play.get("crs_original_fault_changed") is True
+            else "No"
+        )
+    if not stored_detail and stored_outcome in {"Confirmed", "Stands"}:
+        stored_detail = "No"
+
+    detail_options = [""] + ["No", "Yes"] + [
+        item
+        for item in NEW_FAULT_OPTIONS
+        if item not in {"No", "Yes"}
+    ]
+    if stored_detail and stored_detail not in detail_options:
+        detail_options.append(stored_detail)
+    initialize(detail_key, stored_detail)
+
+    stored_judgment = normalize_referee_judgment(
+        play.get("referee_judgment"),
+        play.get("review_decision_correct"),
+    )
+    initialize(
+        judgment_key,
+        stored_judgment if stored_judgment in REFEREE_JUDGMENTS else "",
+    )
+
+    initialize(length_key, seconds_to_time(challenge_length_value(play)))
+    initialize(star_key, bool(play.get("is_starred")))
+    initialize(weekly_key, clean_text(play.get("weekly_summary_note")))
+
+    stored_status = normalize_review_status(play.get("review_status"))
+    status_seed = "" if stored_status == "Not Viewed" else stored_status
+    initialize(
+        status_key,
+        status_seed if status_seed in REVIEW_STATUS_CHOICES else "",
+    )
+
+    with st.form(
+        key=f"review_form_{play_id}",
+        clear_on_submit=False,
+        border=False,
+    ):
+        if is_challenge:
+            row1, row2 = st.columns(2)
+            with row1:
+                original_call = st.selectbox(
+                    "Original Call",
+                    original_options,
+                    key=original_key,
+                    format_func=lambda value: value or "— Select —",
+                )
+            with row2:
+                outcome = st.selectbox(
+                    "Challenge Outcome",
+                    CHALLENGE_OUTCOMES,
+                    key=outcome_key,
+                    format_func=lambda value: value or "— Select —",
+                )
+
+            row3, row4 = st.columns(2)
+            with row3:
+                outcome_detail = st.selectbox(
+                    "Fault Changed / New Fault",
+                    detail_options,
+                    key=detail_key,
+                    format_func=lambda value: value or "— Select —",
+                    help=(
+                        "Confirmed/Stands: choose No or Yes for whether the "
+                        "original fault changed. Reversed: choose the new fault."
+                    ),
+                )
+            with row4:
+                challenge_length = st.text_input(
+                    "Challenge Length (mm:ss)",
+                    key=length_key,
+                    placeholder="1:24",
+                    help="You may also enter total seconds, such as 84.",
+                )
+
+            judgment = st.selectbox(
+                "Referee Judgment",
+                REFEREE_JUDGMENTS,
+                key=judgment_key,
+                format_func=lambda value: value or "— Select —",
+            )
+        else:
+            original_call = clean_text(play.get("crs_original_decision"))
+            outcome = normalize_outcome(
+                play.get("crs_outcome") or play.get("challenge_result")
+            )
+            outcome_detail = clean_text(play.get("challenge_outcome_detail"))
+            challenge_length = seconds_to_time(challenge_length_value(play))
+            judgment = normalize_referee_judgment(
+                play.get("referee_judgment"),
+                play.get("review_decision_correct"),
+            )
+
+        st.divider()
+        star_col, status_col = st.columns([1, 2])
+        with star_col:
+            is_starred = st.checkbox("★ Star", key=star_key)
+        with status_col:
+            review_status_choice = st.selectbox(
+                "Review Status",
+                REVIEW_STATUS_CHOICES,
+                key=status_key,
+                format_func=lambda value: (
+                    "Not Viewed (unmarked)" if not value else value
+                ),
+            )
+
+        weekly_summary_note = st.text_area(
+            "Weekly Summary Note",
+            key=weekly_key,
+            height=110,
+            placeholder=(
+                "Only add a note when this challenge needs coordinator attention."
+            ),
+        )
+
+        b1, b2 = st.columns([1, 1.25])
+        with b1:
+            save_clicked = st.form_submit_button(
+                "Save Review",
+                use_container_width=True,
+            )
+        with b2:
+            save_next_clicked = st.form_submit_button(
+                "Save & Next →",
+                type="primary",
+                use_container_width=True,
+                disabled=next_play_id is None,
+            )
+
+    def save_current_review():
+        length_seconds = parse_length(challenge_length)
+        if clean_text(challenge_length) and length_seconds is None:
+            st.error(
+                "Challenge Length must be mm:ss (for example 1:24) "
+                "or total seconds."
+            )
+            return False
+
+        # Preserve the existing database status value for compatibility while
+        # the UI uses the clearer "Needs Additional Review" label.
+        status_to_save = (
+            "Needs Review"
+            if review_status_choice == "Needs Additional Review"
+            else (review_status_choice or "Not Viewed")
+        )
+
+        if is_challenge:
+            valid_calls = ORIGINAL_CALLS.get(category, [])
+            if original_call and original_call not in valid_calls:
+                st.error(
+                    "The Original Call does not match the selected "
+                    "Challenge Category."
+                )
+                return False
+
+            if status_to_save == "Complete":
+                missing = []
+                if not category:
+                    missing.append("Challenge Category")
+                if not original_call:
+                    missing.append("Original Call")
+                if not outcome:
+                    missing.append("Challenge Outcome")
+                if not judgment:
+                    missing.append("Referee Judgment")
+                if missing:
+                    st.error(
+                        "Complete challenges require: "
+                        + ", ".join(missing)
+                        + "."
+                    )
+                    return False
+
+            detail_to_save = clean_text(outcome_detail)
+            changed_to_save = None
+
+            if outcome in {"Confirmed", "Stands"}:
+                if not detail_to_save:
+                    detail_to_save = "No"
+                if detail_to_save not in {"No", "Yes"}:
+                    st.error(
+                        "For Confirmed or Stands, Fault Changed / New Fault "
+                        "must be No or Yes."
+                    )
+                    return False
+                changed_to_save = detail_to_save == "Yes"
+
+            elif outcome == "Reversed":
+                if not detail_to_save or detail_to_save in {"No", "Yes"}:
+                    st.error(
+                        "For a Reversed challenge, choose the new fault in "
+                        "Fault Changed / New Fault."
+                    )
+                    return False
+
+            elif outcome == "Mechanical Failure":
+                detail_to_save = None
+
+            if judgment == "Correct":
+                legacy_accuracy = True
+            elif judgment == "Incorrect":
+                legacy_accuracy = False
+            else:
+                legacy_accuracy = None
+
+            update_data = {
+                "ncaa_challenge_category": category or None,
+                "crs_original_decision": original_call or None,
+                "crs_outcome": outcome or None,
+                "challenge_outcome_detail": detail_to_save or None,
+                "crs_original_fault_changed": changed_to_save,
+                "challenge_length_seconds": length_seconds,
+                "referee_judgment": judgment or None,
+                "review_decision_correct": legacy_accuracy,
+                "is_starred": bool(is_starred),
+                "weekly_summary_note": (
+                    clean_text(weekly_summary_note) or None
+                ),
+                "review_status": status_to_save,
+            }
+        else:
+            update_data = {
+                "is_starred": bool(is_starred),
+                "weekly_summary_note": (
+                    clean_text(weekly_summary_note) or None
+                ),
+                "review_status": status_to_save,
+            }
+
+        try:
+            (
+                supabase.table("plays")
+                .update(update_data)
+                .eq("id", play_id)
+                .execute()
+            )
+            saved_message = (
+                "✓ Saved " + datetime.now().strftime("%I:%M:%S %p")
+            )
+            st.session_state[save_message_key] = saved_message
+            return True
+        except Exception as exc:
+            st.error("The review could not be saved.")
+            st.exception(exc)
+            return False
+
+    if save_clicked:
+        if save_current_review():
+            # Do not full-rerun the page for a normal save. The fragment stays
+            # in place and the video workspace remains completely untouched.
+            st.success(st.session_state[save_message_key])
+
+    if save_next_clicked:
+        if save_current_review():
+            move_to_play(next_play_id)
+            # This is the intentional full-page transition requested by the
+            # tagging workflow: save the current play and advance to the next.
+            st.rerun()
+
+
+render_review_fragment()
