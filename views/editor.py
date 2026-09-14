@@ -13,8 +13,9 @@ from services.review_taxonomy import (
     CHALLENGE_CATEGORIES,
     CHALLENGE_CATEGORY_LABELS,
     CHALLENGE_OUTCOMES,
-    NEW_FAULT_OPTIONS,
     ORIGINAL_CALLS,
+    fault_option_choices,
+    imported_fault_category,
     REFEREE_JUDGMENTS,
     REVIEW_STATUS_CHOICES,
     normalize_challenge_category,
@@ -207,9 +208,22 @@ for item in plays:
         item.get("review_decision_correct"),
     ) or "Not Tagged"
 
-# Legacy unusable rows stay out of the working queue, but the old field is no
-# longer part of the tagging workflow.
-plays = [item for item in plays if item.get("is_unusable") is not True]
+plays = [
+    item
+    for item in plays
+    if item.get("is_unusable") is not True
+]
+
+# Fault imports are searchable reference data only. They are not part of the
+# review/tagging queue.
+review_plays = [
+    item
+    for item in plays
+    if item["_queue_play_type"] in {"Challenge", "POI"}
+]
+
+fault_choice_options = fault_option_choices(plays)
+plays = review_plays
 
 
 # ============================================================
@@ -237,7 +251,7 @@ with st.expander("Filters", expanded=False):
     with f1:
         play_type_filter = st.selectbox(
             "Play Type",
-            ["Challenge", "All", "POI", "Fault"],
+            ["Challenge", "All", "POI"],
             key="editor_filter_play_type",
         )
     with f2:
@@ -345,6 +359,7 @@ for item in plays:
             clean_text(item.get("challenge_outcome_detail")),
             clean_text(item.get("referee_judgment")),
             clean_text(item.get("weekly_summary_note")),
+            imported_fault_category(item),
         ]).lower()
         if search_term not in haystack:
             continue
@@ -530,10 +545,6 @@ def render_review_fragment():
 
     if is_challenge:
         render_section_label("Challenge Review")
-        st.caption(
-            "Choose the Challenge Category. Original Call updates immediately "
-            "without reloading the video workspace."
-        )
         category = st.selectbox(
             "Challenge Category",
             CHALLENGE_CATEGORIES,
@@ -592,7 +603,7 @@ def render_review_fragment():
 
     detail_options = [""] + ["No", "Yes"] + [
         item
-        for item in NEW_FAULT_OPTIONS
+        for item in fault_choice_options
         if item not in {"No", "Yes"}
     ]
     if stored_detail and stored_detail not in detail_options:
@@ -648,17 +659,12 @@ def render_review_fragment():
                     detail_options,
                     key=detail_key,
                     format_func=lambda value: value or "— Select —",
-                    help=(
-                        "Confirmed/Stands: choose No or Yes for whether the "
-                        "original fault changed. Reversed: choose the new fault."
-                    ),
                 )
             with row4:
                 challenge_length = st.text_input(
                     "Challenge Length (mm:ss)",
                     key=length_key,
                     placeholder="1:24",
-                    help="You may also enter total seconds, such as 84.",
                 )
 
             judgment = st.selectbox(
@@ -694,11 +700,11 @@ def render_review_fragment():
             )
 
         weekly_summary_note = st.text_area(
-            "Weekly Summary Note",
+            "Coordinator Note",
             key=weekly_key,
             height=110,
             placeholder=(
-                "Only add a note when this challenge needs coordinator attention."
+                "Optional note for the Coordinator Report."
             ),
         )
 

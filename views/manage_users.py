@@ -48,13 +48,6 @@ render_section_label(
 with st.container(
     border=True
 ):
-    st.caption(
-        (
-            "Create a Supabase login and assign its "
-            "VolleyReview role in one step."
-        )
-    )
-
     with st.form(
         "create_volleyreview_user",
         clear_on_submit=True,
@@ -344,13 +337,7 @@ if users:
         "Set User Password"
     )
 
-    st.caption(
-        (
-            "Use this only when you need to assign a new "
-            "password directly. Passwords are never displayed "
-            "or stored by VolleyReview."
-        )
-    )
+    st.caption("Passwords are never displayed or stored by VolleyReview.")
 
     password_user_id = st.selectbox(
         "User to Update",

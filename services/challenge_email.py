@@ -459,13 +459,7 @@ def email_body(
     include_weekly_note,
     video_angles,
 ):
-    """
-    Gmail compose URLs accept plain text, not true HTML.
-
-    This deliberately uses clean Unicode typography and compact
-    sections so the resulting Gmail draft feels modern without
-    displaying raw HTML tags.
-    """
+    """Build a clean plain-text message for local mail clients and Outlook."""
     lines = []
 
     match_name = clean_value(
@@ -813,7 +807,29 @@ def email_body(
     )
 
 
-def gmail_compose_url(
+def system_mail_compose_url(
+    to_addresses,
+    cc_addresses,
+    bcc_addresses,
+    subject,
+    body,
+):
+    from urllib.parse import quote
+
+    to_value = ",".join(to_addresses)
+    params = {
+        "cc": ",".join(cc_addresses),
+        "bcc": ",".join(bcc_addresses),
+        "subject": subject,
+        "body": body,
+    }
+    return (
+        f"mailto:{quote(to_value, safe=',@')}?"
+        + urlencode(params)
+    )
+
+
+def outlook_compose_url(
     to_addresses,
     cc_addresses,
     bcc_addresses,
@@ -821,33 +837,15 @@ def gmail_compose_url(
     body,
 ):
     params = {
-        "view":
-            "cm",
-        "fs":
-            "1",
-        "to":
-            ", ".join(
-                to_addresses
-            ),
-        "cc":
-            ", ".join(
-                cc_addresses
-            ),
-        "bcc":
-            ", ".join(
-                bcc_addresses
-            ),
-        "su":
-            subject,
-        "body":
-            body,
+        "to": ",".join(to_addresses),
+        "cc": ",".join(cc_addresses),
+        "bcc": ",".join(bcc_addresses),
+        "subject": subject,
+        "body": body,
     }
-
     return (
-        "https://mail.google.com/mail/?"
-        + urlencode(
-            params
-        )
+        "https://outlook.office.com/mail/deeplink/compose?"
+        + urlencode(params)
     )
 
 
@@ -1170,10 +1168,6 @@ def challenge_email_dialog(
                 f"{key_prefix}_all_video_links_"
                 f"{play['id']}"
             ),
-            help=(
-                "Every unique DV Sport video URL attached "
-                "to this challenge is included automatically."
-            ),
         )
 
     body = email_body(
@@ -1207,7 +1201,14 @@ def challenge_email_dialog(
             label_visibility="collapsed",
         )
 
-    gmail_url = gmail_compose_url(
+    mail_url = system_mail_compose_url(
+        to_addresses=to_addresses,
+        cc_addresses=cc_addresses,
+        bcc_addresses=bcc_addresses,
+        subject=subject,
+        body=body,
+    )
+    outlook_url = outlook_compose_url(
         to_addresses=to_addresses,
         cc_addresses=cc_addresses,
         bcc_addresses=bcc_addresses,
@@ -1217,12 +1218,7 @@ def challenge_email_dialog(
 
     st.divider()
 
-    action1, action2 = st.columns(
-        [
-            1.0,
-            2.25,
-        ]
-    )
+    action1, action2, action3 = st.columns([1.0, 1.6, 1.6])
 
     with action1:
         if st.button(
@@ -1237,22 +1233,17 @@ def challenge_email_dialog(
 
     with action2:
         st.link_button(
-            "Open in Gmail →",
-            gmail_url,
+            "Open in Mail App",
+            mail_url,
             use_container_width=True,
             type="primary",
-            help=(
-                "Opens Gmail with recipients, subject, "
-                "review details, and every video link prefilled."
-            ),
         )
 
-    if not to_addresses:
-        st.caption(
-            (
-                "No To recipient is selected yet. Gmail will "
-                "still open and you can add the recipient there."
-            )
+    with action3:
+        st.link_button(
+            "Open in Outlook",
+            outlook_url,
+            use_container_width=True,
         )
 
 

@@ -1,4 +1,5 @@
 from datetime import date
+import hashlib
 
 import streamlit as st
 
@@ -12,6 +13,7 @@ from services.dvsport_sync import (
     TARGET_CONFERENCES,
     YEAR,
     run_dvsport_sync,
+    validate_dvsport_cookie,
 )
 from services.ui import (
     render_page_header,
@@ -33,89 +35,87 @@ render_page_header(
 
 supabase = get_supabase()
 
-cookie_configured = bool(
-    str(
-        st.secrets.get(
-            "DVSPORT_COOKIE",
-            "",
-        )
+
+def current_cookie():
+    return str(
+        st.session_state.get("dvsport_cookie_override")
+        or st.secrets.get("DVSPORT_COOKIE", "")
+        or ""
     ).strip()
-)
+
+
+def cookie_fingerprint(value):
+    return hashlib.sha256(value.encode("utf-8")).hexdigest() if value else ""
+
+
+def current_cookie_status(force=False):
+    cookie = current_cookie()
+    fingerprint = cookie_fingerprint(cookie)
+    cached_fingerprint = st.session_state.get("dvsport_cookie_fingerprint", "")
+
+    if force or fingerprint != cached_fingerprint or "dvsport_cookie_valid" not in st.session_state:
+        valid, error = validate_dvsport_cookie(cookie)
+        st.session_state["dvsport_cookie_fingerprint"] = fingerprint
+        st.session_state["dvsport_cookie_valid"] = bool(valid)
+        st.session_state["dvsport_cookie_error"] = error
+
+    return (
+        cookie,
+        bool(st.session_state.get("dvsport_cookie_valid", False)),
+        str(st.session_state.get("dvsport_cookie_error", "") or ""),
+    )
+
+
+cookie_header, cookie_valid, cookie_error = current_cookie_status()
 
 
 # ============================================================
 # CONNECTION
 # ============================================================
 
-render_section_label(
-    "Connection"
-)
+render_section_label("Connection")
 
-with st.container(
-    border=True
-):
-    c1, c2, c3, c4 = st.columns(
-        4
-    )
+with st.container(border=True):
+    c1, c2, c3, c4 = st.columns(4)
 
     with c1:
-        st.metric(
-            "Season",
-            YEAR,
-        )
-
+        st.metric("Season", YEAR)
     with c2:
-        st.metric(
-            "Conferences",
-            len(
-                TARGET_CONFERENCES
-            ),
-        )
-
+        st.metric("Conferences", len(TARGET_CONFERENCES))
     with c3:
-        st.metric(
-            "Import Types",
-            "3",
-            "Challenges + POIs + FAULTS",
-            delta_color="off",
-        )
-
+        st.metric("Import Types", "3", "Challenges + POIs + FAULTS", delta_color="off")
     with c4:
-        st.metric(
-            "DV Sport Cookie",
-            (
-                "Ready"
-                if cookie_configured
-                else "Missing"
-            ),
-        )
+        st.metric("DV Sport Cookie", "Connected" if cookie_valid else "Needs Update")
 
-
-    if cookie_configured:
-        st.success(
-            "DVSPORT_COOKIE is configured."
+    if not cookie_valid:
+        st.error("DV Sport authentication is not valid. Sync is disabled.")
+        replacement_cookie = st.text_input(
+            "Update DV Sport Cookie",
+            type="password",
+            key="dvsport_cookie_replacement",
         )
-    else:
-        st.error(
-            "DVSPORT_COOKIE is missing from "
-            ".streamlit/secrets.toml."
-        )
+        if st.button("Validate & Use Cookie", use_container_width=True):
+            candidate = replacement_cookie.strip()
+            valid, error = validate_dvsport_cookie(candidate)
+            if valid:
+                st.session_state["dvsport_cookie_override"] = candidate
+                st.session_state.pop("dvsport_cookie_fingerprint", None)
+                st.session_state["dvsport_cookie_valid"] = True
+                st.session_state["dvsport_cookie_error"] = ""
+                st.toast("DV Sport cookie connected.", icon="✅")
+                st.rerun()
+            else:
+                st.error(error or "That DV Sport cookie is not valid.")
 
 
 # ============================================================
 # DATE RANGE
 # ============================================================
 
-render_section_label(
-    "Date Range"
-)
+render_section_label("Date Range")
 
-with st.container(
-    border=True
-):
-    date_col1, date_col2 = st.columns(
-        2
-    )
+with st.container(border=True):
+    date_col1, date_col2 = st.columns(2)
 
     with date_col1:
         sync_start_date = st.date_input(
@@ -137,32 +137,9 @@ with st.container(
             key="dvsport_sync_end_date",
         )
 
-    date_range_valid = (
-        sync_start_date
-        <= sync_end_date
-    )
-
-    if date_range_valid:
-        inclusive_days = (
-            sync_end_date
-            - sync_start_date
-        ).days + 1
-
-        st.success(
-            (
-                f"Sync window: {sync_start_date:%B %d, %Y} "
-                f"through {sync_end_date:%B %d, %Y} "
-                f"({inclusive_days:,} day"
-                f"{'s' if inclusive_days != 1 else ''})."
-            )
-        )
-    else:
-        st.error(
-            "Start Date must be on or before End Date."
-        )
-
-
-
+    date_range_valid = sync_start_date <= sync_end_date
+    if not date_range_valid:
+        st.error("Start Date must be on or before End Date.")
 
 
 # ============================================================
@@ -174,18 +151,18 @@ run_sync = st.button(
     type="primary",
     use_container_width=True,
     disabled=(
-        not cookie_configured
+        not cookie_valid
         or not date_range_valid
     ),
 )
 
 
 if run_sync:
-    cookie_header = str(
-        st.secrets[
-            "DVSPORT_COOKIE"
-        ]
-    ).strip()
+    cookie_header, cookie_valid, cookie_error = current_cookie_status(force=True)
+    if not cookie_valid:
+        st.session_state["dvsport_cookie_valid"] = False
+        st.error("DV Sport authentication expired. Update the cookie before syncing.")
+        st.stop()
 
     result_holder = {}
 
@@ -395,24 +372,10 @@ if run_sync:
         )
 
         if not fault_summary_available:
-            st.error(
-                "DV Sport sync file mismatch detected: this page supports "
-                "FAULTS, but services/dvsport_sync.py is still returning the "
-                "older Challenge/POI-only result format. Replace BOTH "
-                "services/dvsport_sync.py and views/dvsport_sync.py with the "
-                "matching files from the update package, then rerun the sync."
-            )
+            st.error("DV Sport sync components are out of date.")
 
         render_section_label(
             "Sync Results"
-        )
-
-        st.caption(
-            (
-                f"Imported date window: "
-                f"{sync_start_date:%B %d, %Y} through "
-                f"{sync_end_date:%B %d, %Y}"
-            )
         )
 
         r1, r2, r3, r4, r5 = st.columns(

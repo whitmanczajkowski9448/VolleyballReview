@@ -9,6 +9,8 @@ from services.challenge_email import render_email_challenge_button
 from services.database import get_supabase
 from services.play_media import video_angles_from_play
 from services.review_taxonomy import (
+    imported_fault_category,
+    imported_fault_comment,
     normalize_challenge_category,
     normalize_outcome,
     normalize_referee_judgment,
@@ -99,7 +101,10 @@ def play_label(item, position, total):
     if item["_type"] == "Challenge":
         parts.append(item["_category"] or "Unclassified")
         parts.append(item["_outcome"] or "Not Tagged")
-    parts.append(item["_status"])
+    elif item["_type"] == "Fault" and item.get("_fault_category"):
+        parts.append(item["_fault_category"])
+    if item["_type"] != "Fault":
+        parts.append(item["_status"])
     return " • ".join(parts)
 
 
@@ -124,6 +129,8 @@ plays = [item for item in plays if item.get("is_unusable") is not True]
 for item in plays:
     item["_type"] = normalized_play_type(item.get("play_type"))
     item["_status"] = normalize_review_status(item.get("review_status"))
+    if item["_type"] == "Fault":
+        item["_status"] = "Reference"
     item["_date"] = date_value(item.get("match_date"))
     item["_category"] = normalize_challenge_category(
         item.get("ncaa_challenge_category") or item.get("crs_category")
@@ -132,10 +139,20 @@ for item in plays:
     item["_judgment"] = normalize_referee_judgment(
         item.get("referee_judgment"), item.get("review_decision_correct")
     ) or "Not Tagged"
+    item["_fault_category"] = (
+        imported_fault_category(item)
+        if item["_type"] == "Fault"
+        else ""
+    )
 
 conferences = sorted({clean_text(item.get("conference")) for item in plays if clean_text(item.get("conference"))})
 categories = sorted({item["_category"] for item in plays if item["_type"] == "Challenge" and item["_category"]})
 outcomes = sorted({item["_outcome"] for item in plays if item["_type"] == "Challenge" and item["_outcome"]})
+fault_categories = sorted({
+    item["_fault_category"]
+    for item in plays
+    if item["_type"] == "Fault" and item["_fault_category"]
+})
 valid_dates = [item["_date"] for item in plays if item["_date"] is not None]
 min_date = min(valid_dates) if valid_dates else date.today()
 max_date = max(valid_dates) if valid_dates else date.today()
@@ -159,12 +176,18 @@ with st.expander("Filters", expanded=False):
             key="viewer_judgment",
         )
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         category_filter = st.selectbox("Challenge Category", ["All"] + categories, key="viewer_category")
     with c2:
         outcome_filter = st.selectbox("Challenge Outcome", ["All"] + outcomes, key="viewer_outcome")
     with c3:
+        fault_category_filter = st.selectbox(
+            "Fault Category",
+            ["All"] + fault_categories,
+            key="viewer_fault_category",
+        )
+    with c4:
         star_filter = st.selectbox("Starred", ["All", "Starred", "Not Starred"], key="viewer_star")
 
     d1, d2, d3 = st.columns(3)
@@ -205,6 +228,11 @@ for item in plays:
         continue
     if outcome_filter != "All" and (item["_type"] != "Challenge" or item["_outcome"] != outcome_filter):
         continue
+    if fault_category_filter != "All" and (
+        item["_type"] != "Fault"
+        or item["_fault_category"] != fault_category_filter
+    ):
+        continue
     if star_filter == "Starred" and item.get("is_starred") is not True:
         continue
     if star_filter == "Not Starred" and item.get("is_starred") is True:
@@ -227,6 +255,9 @@ for item in plays:
             clean_text(item.get("challenge_outcome_detail")),
             clean_text(item.get("referee_judgment")),
             clean_text(item.get("weekly_summary_note")),
+            clean_text(item.get("dvsport_play_category")),
+            imported_fault_comment(item),
+            item.get("_fault_category", ""),
         ]).lower()
         if term not in haystack:
             continue

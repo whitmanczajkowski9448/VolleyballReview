@@ -384,6 +384,40 @@ def get_playlist_data(
     )
 
 
+def validate_dvsport_cookie(
+    cookie_header,
+    timeout=3,
+):
+    """Fast DV Sport authentication check used by the Streamlit UI."""
+    cookie_header = clean_text(cookie_header)
+    if not cookie_header:
+        return False, "DV Sport cookie is missing."
+
+    try:
+        session = make_session(cookie_header)
+        response = session.post(
+            LIBRARY_URL,
+            data={
+                "regionType": "Library",
+                "canViewDocs": "true",
+                "forceCacheRefresh": "false",
+                "orgId": str(ORG_ID),
+                "pageNumber": "1",
+            },
+            timeout=timeout,
+            allow_redirects=False,
+        )
+        data = response_to_json(
+            response,
+            "DV Sport cookie check",
+        )
+        if not isinstance(data, (dict, list)):
+            return False, "DV Sport returned an unexpected response."
+        return True, ""
+    except Exception as exc:
+        return False, clean_text(exc) or "DV Sport cookie validation failed."
+
+
 def verify_dvsport_session(
     cookie_header,
 ):

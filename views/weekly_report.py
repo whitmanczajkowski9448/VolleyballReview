@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from urllib.parse import quote, urlencode
 
 import pandas as pd
 import streamlit as st
@@ -24,8 +25,8 @@ from services.ui import (
 require_admin()
 
 render_page_header(
-    "Weekly Coordinator Report",
-    "Build a concise coordinator brief and a full challenge analytics attachment.",
+    "Coordinator Report",
+    "Challenge review summary and coordinator communication.",
     eyebrow="NCAA WVB • COORDINATOR REPORTING",
 )
 
@@ -85,7 +86,7 @@ def email_subject(start_date, end_date):
         date_text = f"{start_date:%B %d} – {end_date:%B %d, %Y}"
     else:
         date_text = f"{start_date:%B %d, %Y} – {end_date:%B %d, %Y}"
-    return f"NCAA WVB Weekly Review | {date_text}"
+    return f"NCAA WVB Coordinator Report | {date_text}"
 
 
 def build_coordinator_body(
@@ -109,49 +110,58 @@ def build_coordinator_body(
     unclear_count,
     special_rows,
 ):
+    divider = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     lines = [
-        "Hello,",
+        "NCAA WOMEN'S VOLLEYBALL REVIEW",
+        f"COORDINATOR REPORT  |  {report_start:%B %d, %Y} – {report_end:%B %d, %Y}",
+        divider,
         "",
+        "AT A GLANCE",
         (
-            f"Here is the NCAA Women's Volleyball review update for "
-            f"{report_start:%B %d, %Y} through {report_end:%B %d, %Y}."
+            f"Challenges  {total_challenges:,}    |    "
+            f"POIs  {total_pois:,}    |    "
+            f"Faults  {total_faults:,}"
+        ),
+        (
+            f"Reversal Rate  {reversal_rate:.1f}%    |    "
+            f"Average Review  {format_seconds(average_seconds)}"
         ),
         "",
+        "REVIEW STATUS",
         (
-            f"The report includes {total_challenges:,} challenge"
-            f"{'' if total_challenges == 1 else 's'}, {total_pois:,} POI"
-            f"{'' if total_pois == 1 else 's'}, and {total_faults:,} fault clip"
-            f"{'' if total_faults == 1 else 's'}. "
-            f"Challenge review status: {complete:,} complete, "
-            f"{needs_review:,} needing additional review, and "
-            f"{not_viewed:,} not yet viewed."
+            f"Complete  {complete:,}    |    "
+            f"Needs Additional Review  {needs_review:,}    |    "
+            f"Not Viewed  {not_viewed:,}"
         ),
     ]
 
     if total_challenges:
         lines.extend([
             "",
+            "CHALLENGE OUTCOMES",
             (
-                f"Challenge outcomes: {confirmed_count:,} confirmed, "
-                f"{reversed_count:,} reversed, {stands_count:,} stands, and "
-                f"{mechanical_count:,} mechanical/video failure"
-                f"{'' if mechanical_count == 1 else 's'}. "
-                f"The reversal rate is {reversal_rate:.1f}% and the average "
-                f"review length is {format_seconds(average_seconds)}."
+                f"Confirmed  {confirmed_count:,}    |    "
+                f"Reversed  {reversed_count:,}    |    "
+                f"Stands  {stands_count:,}    |    "
+                f"Mechanical Failure  {mechanical_count:,}"
             ),
+            "",
+            "REFEREE JUDGMENT",
             (
-                f"Referee judgment: {correct_count:,} correct, "
-                f"{incorrect_count:,} incorrect, and {unclear_count:,} unclear."
+                f"Correct  {correct_count:,}    |    "
+                f"Incorrect  {incorrect_count:,}    |    "
+                f"Unclear  {unclear_count:,}"
             ),
         ])
 
-    lines.extend(["", "CHALLENGES REQUIRING ATTENTION"])
+    lines.extend(["", divider, "", "CHALLENGES REQUIRING ATTENTION"])
 
     if not special_rows:
-        lines.append("No challenges have a special coordinator note for this report.")
+        lines.append("No coordinator notes for this reporting period.")
     else:
         for index, row in enumerate(special_rows, start=1):
             match_name = clean_text(row.get("match_name")) or "Challenge"
+            conference = clean_text(row.get("conference")) or "—"
             set_text = clean_text(row.get("set_number")) or "—"
             score = clean_text(row.get("score")) or "—"
             category = clean_text(row.get("category")) or "—"
@@ -161,20 +171,57 @@ def build_coordinator_body(
 
             lines.extend([
                 "",
-                f"{index}. {match_name} • Set {set_text} • {score}",
-                f"   {category} • {outcome}",
+                f"{index}. {match_name}",
+                f"   {conference}  |  Set {set_text}  |  {score}",
+                f"   {category}  |  {outcome}",
                 f"   {note}",
             ])
             if link:
-                lines.append(f"   View challenge: {link}")
+                lines.append(f"   {link}")
 
     lines.extend([
         "",
-        "A full challenge analytics PDF can be downloaded from VolleyReview and attached for the complete challenge-by-challenge record.",
+        divider,
+        "",
+        "The full challenge analytics report is available as a PDF attachment from VolleyReview.",
         "",
         "NCAA Women's Volleyball Review",
     ])
+
     return "\n".join(lines)
+
+
+def mailto_url(to_addresses, cc_addresses, subject, body):
+    to_value = ",".join(to_addresses)
+    query = urlencode(
+        {
+            "cc": ",".join(cc_addresses),
+            "subject": subject,
+            "body": body,
+        },
+        quote_via=quote,
+    )
+    return f"mailto:{quote(to_value, safe=',@')}?{query}"
+
+
+def outlook_url(to_addresses, cc_addresses, subject, body):
+    return (
+        "https://outlook.office.com/mail/deeplink/compose?"
+        + urlencode(
+            {
+                "to": ",".join(to_addresses),
+                "cc": ",".join(cc_addresses),
+                "subject": subject,
+                "body": body,
+            },
+            quote_via=quote,
+        )
+    )
+
+
+def split_addresses(value):
+    raw = clean_text(value).replace(";", ",")
+    return [item.strip() for item in raw.split(",") if item.strip()]
 
 
 # ============================================================
@@ -541,7 +588,7 @@ else:
 # COPY-READY COORDINATOR EMAIL
 # ============================================================
 
-render_section_label("Copy-Ready Coordinator Email")
+render_section_label("Coordinator Email")
 subject = email_subject(report_start, report_end)
 body = build_coordinator_body(
     report_start=report_start,
@@ -565,7 +612,48 @@ body = build_coordinator_body(
 )
 
 with st.container(border=True):
-    st.markdown("**Subject**")
-    st.code(subject, language="text", wrap_lines=True)
-    st.markdown("**Email Body**")
-    st.code(body, language="text", wrap_lines=True)
+    recipient_col, cc_col = st.columns(2)
+    with recipient_col:
+        to_text = st.text_input(
+            "To",
+            placeholder="Optional recipient(s)",
+            key="coordinator_email_to",
+        )
+    with cc_col:
+        cc_text = st.text_input(
+            "Cc",
+            placeholder="Optional cc recipient(s)",
+            key="coordinator_email_cc",
+        )
+
+    subject_text = st.text_input(
+        "Subject",
+        value=subject,
+        key="coordinator_email_subject",
+    )
+    body_text = st.text_area(
+        "Email Body",
+        value=body,
+        height=520,
+        key="coordinator_email_body",
+    )
+
+    to_addresses = split_addresses(to_text)
+    cc_addresses = split_addresses(cc_text)
+    system_url = mailto_url(to_addresses, cc_addresses, subject_text, body_text)
+    outlook_compose = outlook_url(to_addresses, cc_addresses, subject_text, body_text)
+
+    open_mail, open_outlook = st.columns(2)
+    with open_mail:
+        st.link_button(
+            "Open in Mail App",
+            system_url,
+            type="primary",
+            use_container_width=True,
+        )
+    with open_outlook:
+        st.link_button(
+            "Open in Outlook",
+            outlook_compose,
+            use_container_width=True,
+        )

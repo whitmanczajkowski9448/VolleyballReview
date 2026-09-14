@@ -6,6 +6,7 @@ import streamlit as st
 
 from services.database import get_supabase
 from services.review_taxonomy import (
+    imported_fault_category,
     normalize_challenge_category,
     normalize_outcome,
     normalize_referee_judgment,
@@ -93,12 +94,14 @@ for column in [
     "review_decision_correct", "challenge_length_seconds",
     "dvsport_challenge_length_seconds", "is_starred", "match_date",
     "match_name", "set_number", "score", "weekly_summary_note",
+    "dvsport_play_category", "dvsport_metadata",
 ]:
     if column not in df.columns:
         df[column] = None
 
 df["type"] = df["play_type"].apply(play_type)
 df["status"] = df["review_status"].apply(normalize_review_status)
+df.loc[df["type"] == "Fault", "status"] = "Reference"
 df["conference_display"] = df["conference"].apply(lambda x: clean_text(x) or "Unknown")
 df["date"] = pd.to_datetime(df["match_date"], errors="coerce").dt.date
 df["outcome"] = df.apply(
@@ -117,6 +120,13 @@ df["judgment"] = df.apply(
     ) or "Not Tagged",
     axis=1,
 )
+df["fault_category"] = df.apply(
+    lambda row: imported_fault_category(row.to_dict())
+    if row.get("type") == "Fault"
+    else "",
+    axis=1,
+)
+
 df["length"] = pd.to_numeric(
     df["challenge_length_seconds"].where(
         df["challenge_length_seconds"].notna(),
@@ -170,9 +180,10 @@ total = len(filtered)
 challenges = len(challenge_df)
 pois = len(poi_df)
 faults = len(fault_df)
-complete = int((filtered["status"] == "Complete").sum())
-needs = int((filtered["status"] == "Needs Additional Review").sum())
-not_viewed = int((filtered["status"] == "Not Viewed").sum())
+reviewable_df = filtered[filtered["type"].isin(["Challenge", "POI"])].copy()
+complete = int((reviewable_df["status"] == "Complete").sum())
+needs = int((reviewable_df["status"] == "Needs Additional Review").sum())
+not_viewed = int((reviewable_df["status"] == "Not Viewed").sum())
 
 render_section_label("Review Inventory")
 k1, k2, k3, k4, k5, k6, k7 = st.columns(7)

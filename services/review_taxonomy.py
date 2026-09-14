@@ -1,3 +1,5 @@
+import json
+
 CHALLENGE_CATEGORIES = [
     "",
     "Touch",
@@ -137,16 +139,96 @@ def normalize_outcome(value):
     text = clean_text(value)
     if not text:
         return ""
+
     upper = text.upper()
-    if "REVER" in upper:
+
+    if (
+        "MECHANICAL" in upper
+        or "VIDEO FAIL" in upper
+        or "TECHNICAL" in upper
+    ):
+        return "Mechanical Failure"
+
+    if (
+        "UNSUCCESS" in upper
+        or "DENIED" in upper
+        or "UPHELD" in upper
+        or "CHALLENGE LOST" in upper
+    ):
+        return "Confirmed"
+
+    if (
+        "REVER" in upper
+        or "OVERTURN" in upper
+        or "SUCCESS" in upper
+        or "GRANTED" in upper
+        or "CHALLENGE WON" in upper
+    ):
         return "Reversed"
+
     if "CONFIRM" in upper:
         return "Confirmed"
+
     if "STAND" in upper or "INCONCLUSIVE" in upper:
         return "Stands"
-    if "MECHANICAL" in upper or "VIDEO FAIL" in upper or "TECHNICAL" in upper:
-        return "Mechanical Failure"
+
     return text
+
+
+def imported_fault_comment(play):
+    """Return the DV Sport COMMENTS value stored with an imported Fault."""
+    metadata = play.get("dvsport_metadata") if isinstance(play, dict) else None
+
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            metadata = {}
+
+    if not isinstance(metadata, dict):
+        return ""
+
+    specialized = metadata.get("specialized")
+    if not isinstance(specialized, dict):
+        return ""
+
+    fields = specialized.get("fields")
+    if not isinstance(fields, dict):
+        return ""
+
+    return clean_text(
+        fields.get("COMMENTS")
+        or fields.get("COMMENT")
+        or fields.get("Comments")
+        or fields.get("Comment")
+    )
+
+
+def imported_fault_category(play):
+    """Return the imported DV Sport FAULT category."""
+    return (
+        clean_text(play.get("dvsport_play_category"))
+        or clean_text(play.get("play_category"))
+    )
+
+
+def fault_option_choices(plays=None):
+    """Static NCAA calls plus unique DV Sport Fault comments already imported."""
+    options = list(NEW_FAULT_OPTIONS)
+    seen = {clean_text(item).casefold() for item in options if clean_text(item)}
+
+    for play in plays or []:
+        play_type = clean_text(play.get("play_type")).upper()
+        if play_type not in {"FAULT", "FAULTS"}:
+            continue
+
+        label = imported_fault_comment(play)
+        key = label.casefold()
+        if label and key not in seen:
+            options.append(label)
+            seen.add(key)
+
+    return options
 
 
 def normalize_referee_judgment(value, legacy_boolean=None):
