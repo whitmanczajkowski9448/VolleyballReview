@@ -8,7 +8,7 @@ from services.database import get_supabase
 from services.review_taxonomy import (
     imported_fault_category,
     normalize_challenge_category,
-    normalize_outcome,
+    resolve_challenge_outcome,
     normalize_referee_judgment,
     normalize_review_status,
 )
@@ -105,7 +105,7 @@ df.loc[df["type"] == "Fault", "status"] = "Reference"
 df["conference_display"] = df["conference"].apply(lambda x: clean_text(x) or "Unknown")
 df["date"] = pd.to_datetime(df["match_date"], errors="coerce").dt.date
 df["outcome"] = df.apply(
-    lambda row: normalize_outcome(row.get("crs_outcome") or row.get("challenge_result")),
+    lambda row: resolve_challenge_outcome(row),
     axis=1,
 )
 df["category"] = df.apply(
@@ -204,7 +204,8 @@ if not challenge_df.empty:
     confirmed_count = int((challenge_df["outcome"] == "Confirmed").sum())
     stands_count = int((challenge_df["outcome"] == "Stands").sum())
     mechanical_count = int((challenge_df["outcome"] == "Mechanical Failure").sum())
-    reversal_rate = reversed_count / challenges * 100 if challenges else 0.0
+    decided_count = reversed_count + confirmed_count + stands_count
+    reversal_rate = reversed_count / decided_count * 100 if decided_count else 0.0
     valid_lengths = challenge_df["length"].dropna()
     avg_length = int(round(valid_lengths.mean())) if not valid_lengths.empty else None
     incorrect = int((challenge_df["judgment"] == "Incorrect").sum())

@@ -8,7 +8,11 @@ from urllib.parse import unquote, urlsplit
 import requests
 from requests.cookies import RequestsCookieJar
 
-from services.review_taxonomy import normalize_outcome
+from services.review_taxonomy import (
+    canonical_outcome,
+    imported_challenge_result,
+    normalize_outcome,
+)
 
 
 # ============================================================
@@ -159,15 +163,7 @@ def dvsport_challenge_result(fields):
 
 def canonical_dvsport_outcome(value):
     """Return a canonical stored outcome only when the DV Sport value is known."""
-    normalized = normalize_outcome(value)
-    if normalized in {
-        "Confirmed",
-        "Reversed",
-        "Stands",
-        "Mechanical Failure",
-    }:
-        return normalized
-    return ""
+    return canonical_outcome(value)
 
 
 # ============================================================
@@ -2385,6 +2381,13 @@ def extract_challenges_from_playlist(
             library_item,
         )
 
+        # Some DV Sport playlist versions expose the human-readable result in
+        # DataVerbose/source metadata rather than the flattened REVIEW RESULT
+        # field. Recover it here before the record is written to Supabase.
+        resolved_source_result = imported_challenge_result(record)
+        if resolved_source_result:
+            record["challenge_result"] = resolved_source_result
+
         record["video_urls"] = extract_video_angles(
             root_data,
             playlist,
@@ -3864,13 +3867,18 @@ def upsert_play(
         clean_text(database_record.get("play_type")).upper()
         == "CHALLENGE"
     )
-    incoming_dvsport_outcome = (
-        canonical_dvsport_outcome(
-            database_record.get("challenge_result")
-        )
+    incoming_source_result = (
+        imported_challenge_result(database_record)
         if is_challenge
         else ""
     )
+    incoming_dvsport_outcome = (
+        canonical_dvsport_outcome(incoming_source_result)
+        if is_challenge
+        else ""
+    )
+    if is_challenge and incoming_source_result:
+        database_record["challenge_result"] = incoming_source_result
 
     if existing:
         # Never let a sparse/older DV Sport snapshot erase richer media
@@ -3896,6 +3904,8 @@ def upsert_play(
             database_record["dvsport_play_number"] = (
                 existing.get("dvsport_play_number")
             )
+        if is_challenge and not clean_text(database_record.get("challenge_result")):
+            database_record["challenge_result"] = existing.get("challenge_result")
 
         if is_challenge and incoming_dvsport_outcome:
             existing_stored_outcome_raw = clean_text(
@@ -3905,7 +3915,7 @@ def upsert_play(
                 existing_stored_outcome_raw
             )
             previous_dvsport_outcome = canonical_dvsport_outcome(
-                existing.get("challenge_result")
+                imported_challenge_result(existing)
             )
 
             # Backfill rows imported before DV Sport outcomes were seeded into

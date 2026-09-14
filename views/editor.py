@@ -21,6 +21,7 @@ from services.review_taxonomy import (
     normalize_challenge_category,
     normalize_original_call,
     normalize_outcome,
+    resolve_challenge_outcome,
     normalize_referee_judgment,
     normalize_review_status,
 )
@@ -200,9 +201,7 @@ for item in plays:
     item["_queue_category"] = normalize_challenge_category(
         item.get("ncaa_challenge_category") or item.get("crs_category")
     )
-    item["_queue_outcome"] = normalize_outcome(
-        item.get("crs_outcome") or item.get("challenge_result")
-    )
+    item["_queue_outcome"] = resolve_challenge_outcome(item)
     item["_queue_judgment"] = normalize_referee_judgment(
         item.get("referee_judgment"),
         item.get("review_decision_correct"),
@@ -581,9 +580,7 @@ def render_review_fragment():
     if st.session_state.get(original_key) not in original_options:
         st.session_state[original_key] = ""
 
-    stored_outcome = normalize_outcome(
-        play.get("crs_outcome") or play.get("challenge_result")
-    )
+    stored_outcome = resolve_challenge_outcome(play)
     initialize(
         outcome_key,
         stored_outcome if stored_outcome in CHALLENGE_OUTCOMES else "",
@@ -675,9 +672,7 @@ def render_review_fragment():
             )
         else:
             original_call = clean_text(play.get("crs_original_decision"))
-            outcome = normalize_outcome(
-                play.get("crs_outcome") or play.get("challenge_result")
-            )
+            outcome = resolve_challenge_outcome(play)
             outcome_detail = clean_text(play.get("challenge_outcome_detail"))
             challenge_length = seconds_to_time(challenge_length_value(play))
             judgment = normalize_referee_judgment(

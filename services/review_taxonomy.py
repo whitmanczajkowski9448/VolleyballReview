@@ -140,22 +140,29 @@ def normalize_outcome(value):
     if not text:
         return ""
 
-    upper = text.upper()
+    upper = text.upper().strip()
 
-    # DV Sport can expose the same result with different wording depending on
-    # playlist/version. Normalize every recognized source value to the four
-    # canonical VolleyReview outcomes used by the dashboard and reports.
+    if upper in {"R", "REV", "REVERSED", "OVERTURNED"}:
+        return "Reversed"
+    if upper in {"C", "CONF", "CONFIRMED", "UPHELD"}:
+        return "Confirmed"
+    if upper in {"S", "STANDS", "INCONCLUSIVE"}:
+        return "Stands"
+    if upper in {"MF", "MECHANICAL FAILURE"}:
+        return "Mechanical Failure"
+
     if (
         "MECHANICAL" in upper
         or "VIDEO FAIL" in upper
         or "VIDEO FAILURE" in upper
-        or "TECHNICAL" in upper
+        or "TECHNICAL FAILURE" in upper
         or "EQUIPMENT FAIL" in upper
+        or "NO VIDEO" in upper
     ):
         return "Mechanical Failure"
 
-    # Check unsuccessful before successful because UNSUCCESSFUL contains the
-    # word SUCCESSFUL.
+    # Check negative phrases before positive ones. For example,
+    # UNSUCCESSFUL contains SUCCESSFUL and NO CHANGE contains CHANGE.
     if (
         "UNSUCCESS" in upper
         or "DENIED" in upper
@@ -163,6 +170,8 @@ def normalize_outcome(value):
         or "CHALLENGE LOST" in upper
         or "CALL CONFIRMED" in upper
         or "RULING CONFIRMED" in upper
+        or "NO CHANGE" in upper
+        or "CALL UPHELD" in upper
     ):
         return "Confirmed"
 
@@ -186,11 +195,230 @@ def normalize_outcome(value):
         or "INSUFFICIENT EVIDENCE" in upper
         or "NO CONCLUSIVE" in upper
         or "NO DECISION" in upper
+        or "UNABLE TO DETERMINE" in upper
     ):
         return "Stands"
 
     return text
 
+
+CANONICAL_OUTCOMES = {
+    "Confirmed",
+    "Reversed",
+    "Stands",
+    "Mechanical Failure",
+}
+
+
+def canonical_outcome(value):
+    normalized = normalize_outcome(value)
+    return normalized if normalized in CANONICAL_OUTCOMES else ""
+
+
+def _metadata_object(play):
+    if play is None or not hasattr(play, "get"):
+        return {}
+
+    metadata = play.get("dvsport_metadata")
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            metadata = {}
+
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _result_key(value):
+    return "".join(ch for ch in clean_text(value).upper() if ch.isalnum())
+
+
+def _is_result_heading(value):
+    key = _result_key(value)
+    if not key:
+        return False
+
+    exact = {
+        "REVIEWRESULT",
+        "CHALLENGERESULT",
+        "REVIEWOUTCOME",
+        "CHALLENGEOUTCOME",
+        "CRSRESULT",
+        "CRSOUTCOME",
+        "RESULT",
+        "OUTCOME",
+        "REVIEWDECISION",
+        "CHALLENGEDECISION",
+        "CRSDECISION",
+        "REVIEWSTATUS",
+        "CHALLENGESTATUS",
+        "CRSSTATUS",
+        "REVIEWSUCCESS",
+        "REVIEWSUCCESSFUL",
+        "CHALLENGESUCCESS",
+        "CHALLENGESUCCESSFUL",
+        "REVIEWDISPOSITION",
+        "CHALLENGEDISPOSITION",
+        "REVIEWRULING",
+        "CHALLENGERULING",
+    }
+    if key in exact:
+        return True
+
+    has_result_word = any(
+        word in key
+        for word in (
+            "RESULT",
+            "OUTCOME",
+            "DECISION",
+            "STATUS",
+            "SUCCESS",
+            "DISPOSITION",
+            "RULING",
+        )
+    )
+    has_source_word = any(word in key for word in ("REVIEW", "CHALLENGE", "CRS"))
+    return has_result_word and has_source_word
+
+
+def _display_values(value):
+    """Yield human-readable scalar candidates from a DV Sport value object."""
+    if value is None:
+        return
+
+    if isinstance(value, dict):
+        preferred = (
+            "displayValue", "DisplayValue", "displayText", "DisplayText",
+            "formattedValue", "FormattedValue", "label", "Label",
+            "text", "Text", "name", "Name", "title", "Title",
+            "fieldData", "fielddata", "value", "Value",
+        )
+        seen_keys = set()
+        for key in preferred:
+            if key in value:
+                seen_keys.add(key)
+                yield from _display_values(value.get(key))
+        for key, nested in value.items():
+            if key not in seen_keys:
+                yield from _display_values(nested)
+        return
+
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _display_values(item)
+        return
+
+    text = clean_text(value)
+    if text:
+        yield text
+
+
+def _canonical_candidate(value):
+    for candidate in _display_values(value):
+        if canonical_outcome(candidate):
+            return candidate
+    return ""
+
+
+def _heading_candidate(heading, value):
+    """Resolve one DV Sport result field, including success booleans."""
+    candidate = _canonical_candidate(value)
+    if candidate:
+        return candidate
+
+    heading_key = _result_key(heading)
+    if "SUCCESS" not in heading_key:
+        return ""
+
+    # Some playlist versions expose challenge success as a boolean instead of
+    # a display string. A successful challenge changes the ruling (Reversed);
+    # an unsuccessful challenge leaves the ruling in place (Confirmed).
+    for raw in _display_values(value):
+        token = clean_text(raw).strip().upper()
+        if token in {"TRUE", "YES", "Y", "1"}:
+            return "Reversed"
+        if token in {"FALSE", "NO", "N", "0"}:
+            return "Confirmed"
+
+    if value is True:
+        return "Reversed"
+    if value is False:
+        return "Confirmed"
+    return ""
+
+
+def imported_challenge_result(play):
+    """Recover the DV Sport challenge result from stored source data.
+
+    Existing databases may have blank challenge_result values even though the
+    original DV Sport fields were retained inside dvsport_metadata. This helper
+    reads both locations so old imports can be resolved without deleting data.
+    """
+    if play is None or not hasattr(play, "get"):
+        return ""
+
+    direct = clean_text(play.get("challenge_result"))
+    if canonical_outcome(direct):
+        return direct
+
+    metadata = _metadata_object(play)
+    specialized = metadata.get("specialized") if isinstance(metadata, dict) else None
+    if not isinstance(specialized, dict):
+        return direct
+
+    fields = specialized.get("fields")
+    if isinstance(fields, dict):
+        # Prefer recognized result/outcome/decision headings only. This avoids
+        # accidentally interpreting values such as "Successful Pancake" as a
+        # challenge result.
+        for key, value in fields.items():
+            if not _is_result_heading(key):
+                continue
+            candidate = _heading_candidate(key, value)
+            if candidate:
+                return candidate
+
+    verbose = specialized.get("data_verbose") or specialized.get("DataVerbose") or []
+    if isinstance(verbose, list):
+        for entry in verbose:
+            if not isinstance(entry, dict):
+                continue
+            heading = (
+                entry.get("internalName")
+                or entry.get("internalname")
+                or entry.get("displayName")
+                or entry.get("DisplayName")
+                or entry.get("fieldName")
+                or entry.get("FieldName")
+                or entry.get("name")
+                or entry.get("Name")
+                or entry.get("label")
+                or entry.get("Label")
+            )
+            if not _is_result_heading(heading):
+                continue
+
+            candidate = _heading_candidate(heading, entry)
+            if candidate:
+                return candidate
+
+    return direct
+
+
+def resolve_challenge_outcome(play):
+    """Return the effective challenge outcome used throughout VolleyReview.
+
+    A coordinator-entered crs_outcome always wins. Otherwise use the DV Sport
+    result, including the copy preserved in dvsport_metadata for older imports.
+    """
+    if play is None or not hasattr(play, "get"):
+        return ""
+
+    stored = canonical_outcome(play.get("crs_outcome"))
+    if stored:
+        return stored
+
+    return canonical_outcome(imported_challenge_result(play))
 
 def imported_fault_comment(play):
     """Return the DV Sport COMMENTS value stored with an imported Fault."""

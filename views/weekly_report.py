@@ -10,7 +10,7 @@ from services.public_share import public_challenge_url
 from services.reporting import build_challenge_analytics_pdf
 from services.review_taxonomy import (
     normalize_challenge_category,
-    normalize_outcome,
+    resolve_challenge_outcome,
     normalize_referee_judgment,
     normalize_review_status,
 )
@@ -268,7 +268,7 @@ df["report_type"] = df["play_type"].apply(play_type)
 df["report_status"] = df["review_status"].apply(normalize_review_status)
 df["report_conference"] = df["conference"].apply(lambda x: clean_text(x) or "No Conference")
 df["report_outcome"] = df.apply(
-    lambda row: normalize_outcome(row.get("crs_outcome") or row.get("challenge_result")), axis=1
+    lambda row: resolve_challenge_outcome(row), axis=1
 )
 df["report_category"] = df.apply(
     lambda row: normalize_challenge_category(
@@ -440,7 +440,8 @@ reversed_count = int((challenge_df["report_outcome"] == "Reversed").sum())
 confirmed_count = int((challenge_df["report_outcome"] == "Confirmed").sum())
 stands_count = int((challenge_df["report_outcome"] == "Stands").sum())
 mechanical_count = int((challenge_df["report_outcome"] == "Mechanical Failure").sum())
-reversal_rate = reversed_count / total_challenges * 100 if total_challenges else 0.0
+decided_count = reversed_count + confirmed_count + stands_count
+reversal_rate = reversed_count / decided_count * 100 if decided_count else 0.0
 correct_count = int((challenge_df["report_judgment"] == "Correct").sum())
 incorrect_count = int((challenge_df["report_judgment"] == "Incorrect").sum())
 unclear_count = int((challenge_df["report_judgment"] == "Unclear").sum())
