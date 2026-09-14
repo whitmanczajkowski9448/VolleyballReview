@@ -1,5 +1,4 @@
 from datetime import date
-import hashlib
 
 import streamlit as st
 
@@ -13,7 +12,6 @@ from services.dvsport_sync import (
     TARGET_CONFERENCES,
     YEAR,
     run_dvsport_sync,
-    validate_dvsport_cookie,
 )
 from services.ui import (
     render_page_header,
@@ -36,37 +34,11 @@ render_page_header(
 supabase = get_supabase()
 
 
-def current_cookie():
-    return str(
-        st.session_state.get("dvsport_cookie_override")
-        or st.secrets.get("DVSPORT_COOKIE", "")
-        or ""
-    ).strip()
-
-
-def cookie_fingerprint(value):
-    return hashlib.sha256(value.encode("utf-8")).hexdigest() if value else ""
-
-
-def current_cookie_status(force=False):
-    cookie = current_cookie()
-    fingerprint = cookie_fingerprint(cookie)
-    cached_fingerprint = st.session_state.get("dvsport_cookie_fingerprint", "")
-
-    if force or fingerprint != cached_fingerprint or "dvsport_cookie_valid" not in st.session_state:
-        valid, error = validate_dvsport_cookie(cookie)
-        st.session_state["dvsport_cookie_fingerprint"] = fingerprint
-        st.session_state["dvsport_cookie_valid"] = bool(valid)
-        st.session_state["dvsport_cookie_error"] = error
-
-    return (
-        cookie,
-        bool(st.session_state.get("dvsport_cookie_valid", False)),
-        str(st.session_state.get("dvsport_cookie_error", "") or ""),
-    )
-
-
-cookie_header, cookie_valid, cookie_error = current_cookie_status()
+cookie_header = str(
+    st.secrets.get("DVSPORT_COOKIE", "")
+    or ""
+).strip()
+cookie_configured = bool(cookie_header)
 
 
 # ============================================================
@@ -85,27 +57,10 @@ with st.container(border=True):
     with c3:
         st.metric("Import Types", "3", "Challenges + POIs + FAULTS", delta_color="off")
     with c4:
-        st.metric("DV Sport Cookie", "Connected" if cookie_valid else "Needs Update")
+        st.metric("DV Sport Cookie", "Configured" if cookie_configured else "Missing")
 
-    if not cookie_valid:
-        st.error("DV Sport authentication is not valid. Sync is disabled.")
-        replacement_cookie = st.text_input(
-            "Update DV Sport Cookie",
-            type="password",
-            key="dvsport_cookie_replacement",
-        )
-        if st.button("Validate & Use Cookie", use_container_width=True):
-            candidate = replacement_cookie.strip()
-            valid, error = validate_dvsport_cookie(candidate)
-            if valid:
-                st.session_state["dvsport_cookie_override"] = candidate
-                st.session_state.pop("dvsport_cookie_fingerprint", None)
-                st.session_state["dvsport_cookie_valid"] = True
-                st.session_state["dvsport_cookie_error"] = ""
-                st.toast("DV Sport cookie connected.", icon="✅")
-                st.rerun()
-            else:
-                st.error(error or "That DV Sport cookie is not valid.")
+    if not cookie_configured:
+        st.error("DVSPORT_COOKIE is missing from Streamlit secrets.")
 
 
 # ============================================================
@@ -151,19 +106,13 @@ run_sync = st.button(
     type="primary",
     use_container_width=True,
     disabled=(
-        not cookie_valid
+        not cookie_configured
         or not date_range_valid
     ),
 )
 
 
 if run_sync:
-    cookie_header, cookie_valid, cookie_error = current_cookie_status(force=True)
-    if not cookie_valid:
-        st.session_state["dvsport_cookie_valid"] = False
-        st.error("DV Sport authentication expired. Update the cookie before syncing.")
-        st.stop()
-
     result_holder = {}
 
     with st.status(
