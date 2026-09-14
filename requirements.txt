@@ -5,3 +5,4 @@ requests
 tqdm
 browser-cookie3
 altair
+reportlab>=4.4,<5
