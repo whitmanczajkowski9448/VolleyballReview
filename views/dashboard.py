@@ -46,6 +46,22 @@ def clean_text(value):
     return "" if text.lower() in {"", "none", "null", "nan", "<na>"} else text
 
 
+def first_text(*values):
+    for value in values:
+        text = clean_text(value)
+        if text:
+            return text
+    return ""
+
+
+def actual_chart_values(series, allowed=None):
+    cleaned = series.apply(clean_text)
+    cleaned = cleaned[cleaned != ""]
+    if allowed is not None:
+        cleaned = cleaned[cleaned.isin(allowed)]
+    return cleaned
+
+
 def play_type(value):
     text = clean_text(value).upper()
     if text in {"CHALLENGE", "CHALLENGES"}:
@@ -110,15 +126,23 @@ df["outcome"] = df.apply(
     axis=1,
 )
 df["category"] = df.apply(
-    lambda row: normalize_challenge_category(
-        row.get("ncaa_challenge_category") or row.get("crs_category")
-    ) or "Not Tagged",
+    lambda row: clean_text(
+        normalize_challenge_category(
+            first_text(
+                row.get("ncaa_challenge_category"),
+                row.get("crs_category"),
+            )
+        )
+    ),
     axis=1,
 )
 df["judgment"] = df.apply(
-    lambda row: normalize_referee_judgment(
-        row.get("referee_judgment"), row.get("review_decision_correct")
-    ) or "Not Tagged",
+    lambda row: clean_text(
+        normalize_referee_judgment(
+            first_text(row.get("referee_judgment")),
+            row.get("review_decision_correct"),
+        )
+    ),
     axis=1,
 )
 df["fault_category"] = df.apply(
@@ -226,91 +250,131 @@ if not challenge_df.empty:
     render_section_label("Challenge Analytics")
     left, right = st.columns(2)
 
+    valid_outcomes = [
+        "Confirmed",
+        "Reversed",
+        "Stands",
+        "Mechanical Failure",
+    ]
+    outcome_values = actual_chart_values(
+        challenge_df["outcome"],
+        allowed=valid_outcomes,
+    )
     outcome_data = (
-        challenge_df["outcome"]
-        .replace("", "Not Tagged")
+        outcome_values
         .value_counts()
         .rename_axis("Outcome")
         .reset_index(name="Challenges")
     )
     with left:
         st.subheader("Challenge Outcomes")
-        chart = (
-            alt.Chart(outcome_data)
-            .mark_bar(cornerRadiusTopRight=6, cornerRadiusBottomRight=6)
-            .encode(
-                x=alt.X("Challenges:Q", title=None),
-                y=alt.Y("Outcome:N", sort="-x", title=None),
-                color=alt.value(NCAA_BLUE),
-                tooltip=["Outcome:N", "Challenges:Q"],
+        if outcome_data.empty:
+            render_empty("No challenge outcomes are classified yet.")
+        else:
+            chart = (
+                alt.Chart(outcome_data)
+                .mark_bar(cornerRadiusTopRight=6, cornerRadiusBottomRight=6)
+                .encode(
+                    x=alt.X("Challenges:Q", title=None),
+                    y=alt.Y("Outcome:N", sort="-x", title=None),
+                    color=alt.value(NCAA_BLUE),
+                    tooltip=["Outcome:N", "Challenges:Q"],
+                )
+                .properties(height=max(220, 38 * len(outcome_data)))
             )
-            .properties(height=max(220, 38 * len(outcome_data)))
-        )
-        st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, use_container_width=True)
 
+    valid_categories = [
+        "Touch",
+        "In/Out",
+        "Net",
+        "Attack Line",
+        "Service Line / CenterLine",
+    ]
+    category_values = actual_chart_values(
+        challenge_df["category"],
+        allowed=valid_categories,
+    )
     category_data = (
-        challenge_df["category"]
+        category_values
         .value_counts()
         .rename_axis("Category")
         .reset_index(name="Challenges")
     )
     with right:
         st.subheader("Challenge Categories")
-        chart = (
-            alt.Chart(category_data)
-            .mark_bar(cornerRadiusTopRight=6, cornerRadiusBottomRight=6)
-            .encode(
-                x=alt.X("Challenges:Q", title=None),
-                y=alt.Y("Category:N", sort="-x", title=None),
-                color=alt.value(SKY),
-                tooltip=["Category:N", "Challenges:Q"],
+        if category_data.empty:
+            render_empty("No challenge categories are classified yet.")
+        else:
+            chart = (
+                alt.Chart(category_data)
+                .mark_bar(cornerRadiusTopRight=6, cornerRadiusBottomRight=6)
+                .encode(
+                    x=alt.X("Challenges:Q", title=None),
+                    y=alt.Y("Category:N", sort="-x", title=None),
+                    color=alt.value(SKY),
+                    tooltip=["Category:N", "Challenges:Q"],
+                )
+                .properties(height=max(220, 38 * len(category_data)))
             )
-            .properties(height=max(220, 38 * len(category_data)))
-        )
-        st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, use_container_width=True)
 
     left2, right2 = st.columns(2)
+    judgment_values = actual_chart_values(
+        challenge_df["judgment"],
+        allowed=["Correct", "Incorrect", "Unclear"],
+    )
     judgment_data = (
-        challenge_df["judgment"]
+        judgment_values
         .value_counts()
         .rename_axis("Judgment")
         .reset_index(name="Challenges")
     )
     with left2:
         st.subheader("Referee Judgment")
-        chart = (
-            alt.Chart(judgment_data)
-            .mark_bar(cornerRadiusTopRight=6, cornerRadiusBottomRight=6)
-            .encode(
-                x=alt.X("Challenges:Q", title=None),
-                y=alt.Y("Judgment:N", sort="-x", title=None),
-                color=alt.value(LAVENDER),
-                tooltip=["Judgment:N", "Challenges:Q"],
+        if judgment_data.empty:
+            render_empty("No referee judgments are classified yet.")
+        else:
+            chart = (
+                alt.Chart(judgment_data)
+                .mark_bar(cornerRadiusTopRight=6, cornerRadiusBottomRight=6)
+                .encode(
+                    x=alt.X("Challenges:Q", title=None),
+                    y=alt.Y("Judgment:N", sort="-x", title=None),
+                    color=alt.value(LAVENDER),
+                    tooltip=["Judgment:N", "Challenges:Q"],
+                )
+                .properties(height=max(220, 38 * len(judgment_data)))
             )
-            .properties(height=max(220, 38 * len(judgment_data)))
-        )
-        st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, use_container_width=True)
 
-    conference_data = (
+    conference_values = actual_chart_values(
         challenge_df["conference_display"]
+    )
+    conference_values = conference_values[conference_values != "Unknown"]
+    conference_data = (
+        conference_values
         .value_counts()
         .rename_axis("Conference")
         .reset_index(name="Challenges")
     )
     with right2:
         st.subheader("Challenges by Conference")
-        chart = (
-            alt.Chart(conference_data)
-            .mark_bar(cornerRadiusTopRight=6, cornerRadiusBottomRight=6)
-            .encode(
-                x=alt.X("Challenges:Q", title=None),
-                y=alt.Y("Conference:N", sort="-x", title=None),
-                color=alt.value(MINT),
-                tooltip=["Conference:N", "Challenges:Q"],
+        if conference_data.empty:
+            render_empty("No conference data is available.")
+        else:
+            chart = (
+                alt.Chart(conference_data)
+                .mark_bar(cornerRadiusTopRight=6, cornerRadiusBottomRight=6)
+                .encode(
+                    x=alt.X("Challenges:Q", title=None),
+                    y=alt.Y("Conference:N", sort="-x", title=None),
+                    color=alt.value(MINT),
+                    tooltip=["Conference:N", "Challenges:Q"],
+                )
+                .properties(height=max(220, 38 * len(conference_data)))
             )
-            .properties(height=max(220, 38 * len(conference_data)))
-        )
-        st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, use_container_width=True)
 
 starred = filtered[filtered["is_starred"] == True].copy()  # noqa: E712
 if not starred.empty:
