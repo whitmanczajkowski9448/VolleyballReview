@@ -142,18 +142,27 @@ def normalize_outcome(value):
 
     upper = text.upper()
 
+    # DV Sport can expose the same result with different wording depending on
+    # playlist/version. Normalize every recognized source value to the four
+    # canonical VolleyReview outcomes used by the dashboard and reports.
     if (
         "MECHANICAL" in upper
         or "VIDEO FAIL" in upper
+        or "VIDEO FAILURE" in upper
         or "TECHNICAL" in upper
+        or "EQUIPMENT FAIL" in upper
     ):
         return "Mechanical Failure"
 
+    # Check unsuccessful before successful because UNSUCCESSFUL contains the
+    # word SUCCESSFUL.
     if (
         "UNSUCCESS" in upper
         or "DENIED" in upper
         or "UPHELD" in upper
         or "CHALLENGE LOST" in upper
+        or "CALL CONFIRMED" in upper
+        or "RULING CONFIRMED" in upper
     ):
         return "Confirmed"
 
@@ -163,13 +172,21 @@ def normalize_outcome(value):
         or "SUCCESS" in upper
         or "GRANTED" in upper
         or "CHALLENGE WON" in upper
+        or "CALL CHANGED" in upper
+        or "RULING CHANGED" in upper
     ):
         return "Reversed"
 
     if "CONFIRM" in upper:
         return "Confirmed"
 
-    if "STAND" in upper or "INCONCLUSIVE" in upper:
+    if (
+        "STAND" in upper
+        or "INCONCLUSIVE" in upper
+        or "INSUFFICIENT EVIDENCE" in upper
+        or "NO CONCLUSIVE" in upper
+        or "NO DECISION" in upper
+    ):
         return "Stands"
 
     return text

@@ -8,6 +8,8 @@ from urllib.parse import unquote, urlsplit
 import requests
 from requests.cookies import RequestsCookieJar
 
+from services.review_taxonomy import normalize_outcome
+
 
 # ============================================================
 # SETTINGS
@@ -103,6 +105,69 @@ def to_int(value):
 
 def normalize_field_name(name):
     return clean_text(name)
+
+
+def field_value(fields, *names):
+    """Return the first nonblank field value using case-insensitive names."""
+    if not isinstance(fields, dict):
+        return ""
+
+    lookup = {
+        clean_text(key).upper(): value
+        for key, value in fields.items()
+        if clean_text(key)
+    }
+
+    for name in names:
+        value = lookup.get(clean_text(name).upper())
+        if clean_text(value):
+            return value
+
+    return ""
+
+
+def dvsport_challenge_result(fields):
+    """Resolve the raw DV Sport challenge result from known playlist schemas."""
+    direct = field_value(
+        fields,
+        "REVIEW RESULT",
+        "CHALLENGE RESULT",
+        "REVIEW OUTCOME",
+        "CHALLENGE OUTCOME",
+        "CRS RESULT",
+        "CRS OUTCOME",
+        "RESULT",
+        "OUTCOME",
+    )
+    if clean_text(direct):
+        return clean_text(direct)
+
+    # Some DV Sport playlist versions use a longer internal heading. Prefer a
+    # field explicitly tied to review/challenge/CRS before considering any
+    # generic result/outcome field.
+    for key, value in fields.items():
+        key_upper = clean_text(key).upper()
+        if not clean_text(value):
+            continue
+        if not ("RESULT" in key_upper or "OUTCOME" in key_upper):
+            continue
+        if any(token in key_upper for token in ("REVIEW", "CHALLENGE", "CRS")):
+            return clean_text(value)
+
+    return ""
+
+
+def canonical_dvsport_outcome(value):
+    """Return a canonical stored outcome only when the DV Sport value is known."""
+    normalized = normalize_outcome(value)
+    if normalized in {
+        "Confirmed",
+        "Reversed",
+        "Stands",
+        "Mechanical Failure",
+    }:
+        return normalized
+    return ""
 
 
 # ============================================================
@@ -2195,14 +2260,7 @@ def extract_challenges_from_playlist(
             )
         )
 
-        review_result = clean_text(
-            fields.get(
-                "REVIEW RESULT"
-            )
-            or fields.get(
-                "REVIEW RESULT "
-            )
-        )
+        review_result = dvsport_challenge_result(fields)
 
         initiator_upper = initiator.upper()
         review_type_upper = (
@@ -3190,8 +3248,9 @@ def get_existing_play(
         .table("plays")
         .select(
             "id,dvsport_id,conference,match_date,match_name,play_type,"
-            "set_number,score,dvsport_play_category,challenge_type,video_urls,"
-            "dvsport_play_number,dvsport_source_url,dvsport_full_game_url,dvsport_metadata"
+            "set_number,score,dvsport_play_category,challenge_type,challenge_result,"
+            "crs_outcome,video_urls,dvsport_play_number,dvsport_source_url,"
+            "dvsport_full_game_url,dvsport_metadata"
         )
         .eq("dvsport_id", dvsport_id)
         .limit(1)
@@ -3246,8 +3305,9 @@ def existing_candidates_for_record(
         .table("plays")
         .select(
             "id,dvsport_id,conference,match_date,match_name,play_type,"
-            "set_number,score,dvsport_play_category,challenge_type,video_urls,"
-            "dvsport_play_number,dvsport_source_url,dvsport_full_game_url,dvsport_metadata"
+            "set_number,score,dvsport_play_category,challenge_type,challenge_result,"
+            "crs_outcome,video_urls,dvsport_play_number,dvsport_source_url,"
+            "dvsport_full_game_url,dvsport_metadata"
         )
         .eq("conference", conference)
         .eq("match_date", match_date)
@@ -3769,7 +3829,9 @@ def upsert_play(
     """
     Upsert without creating duplicate Challenge, POI, or FAULT rows.
 
-    Manual review/tagging fields are never part of the write payload.
+    DV Sport is allowed to seed the initial Challenge Outcome into crs_outcome.
+    After a coordinator changes that value in Tag/Edit, later syncs preserve the
+    manual override instead of replacing it with the source result.
     """
     incoming_dvsport_id = record["dvsport_id"]
 
@@ -3798,6 +3860,18 @@ def upsert_play(
         record
     )
 
+    is_challenge = (
+        clean_text(database_record.get("play_type")).upper()
+        == "CHALLENGE"
+    )
+    incoming_dvsport_outcome = (
+        canonical_dvsport_outcome(
+            database_record.get("challenge_result")
+        )
+        if is_challenge
+        else ""
+    )
+
     if existing:
         # Never let a sparse/older DV Sport snapshot erase richer media
         # already stored for the same play. Incoming URLs refresh matching
@@ -3822,6 +3896,34 @@ def upsert_play(
             database_record["dvsport_play_number"] = (
                 existing.get("dvsport_play_number")
             )
+
+        if is_challenge and incoming_dvsport_outcome:
+            existing_stored_outcome_raw = clean_text(
+                existing.get("crs_outcome")
+            )
+            existing_stored_outcome = canonical_dvsport_outcome(
+                existing_stored_outcome_raw
+            )
+            previous_dvsport_outcome = canonical_dvsport_outcome(
+                existing.get("challenge_result")
+            )
+
+            # Backfill rows imported before DV Sport outcomes were seeded into
+            # crs_outcome. If the stored value still equals the previous DV
+            # Sport result, it is source-derived and may follow a source update.
+            # A different stored value is a coordinator override and is kept.
+            if (
+                not existing_stored_outcome_raw
+                or (
+                    previous_dvsport_outcome
+                    and existing_stored_outcome
+                    == previous_dvsport_outcome
+                )
+            ):
+                database_record["crs_outcome"] = (
+                    incoming_dvsport_outcome
+                )
+
         # If this was matched through media/play-number identity, writing
         # the incoming canonical dvsport_id migrates the legacy row in
         # place.  The exact-ID lookup above already proved the canonical
@@ -3842,13 +3944,16 @@ def upsert_play(
         )
 
     if (
-        clean_text(database_record.get("play_type")).upper() == "CHALLENGE"
+        is_challenge
         and database_record.get("challenge_length_seconds") is None
         and database_record.get("dvsport_challenge_length_seconds") is not None
     ):
         database_record["challenge_length_seconds"] = (
             database_record.get("dvsport_challenge_length_seconds")
         )
+
+    if is_challenge and incoming_dvsport_outcome:
+        database_record["crs_outcome"] = incoming_dvsport_outcome
 
     response = (
         supabase
