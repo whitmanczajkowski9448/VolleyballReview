@@ -420,6 +420,154 @@ def resolve_challenge_outcome(play):
 
     return canonical_outcome(imported_challenge_result(play))
 
+
+def coerce_challenge_length_seconds(value):
+    """Convert a stored/imported challenge length to whole seconds."""
+    if value is None:
+        return None
+
+    text = clean_text(value)
+    if not text:
+        return None
+
+    if ":" in text:
+        parts = text.split(":")
+        if len(parts) != 2:
+            return None
+        try:
+            minutes = int(parts[0])
+            seconds = int(parts[1])
+        except (TypeError, ValueError):
+            return None
+        if minutes < 0 or seconds < 0 or seconds >= 60:
+            return None
+        return minutes * 60 + seconds
+
+    try:
+        seconds = int(float(text))
+    except (TypeError, ValueError):
+        return None
+
+    return seconds if seconds >= 0 else None
+
+
+def _is_length_heading(name):
+    upper = clean_text(name).upper()
+    if not upper:
+        return False
+    if upper in {
+        "REVIEW TIME",
+        "CHALLENGE TIME",
+        "REVIEW LENGTH",
+        "CHALLENGE LENGTH",
+        "REVIEW DURATION",
+        "CHALLENGE DURATION",
+    }:
+        return True
+    return (
+        any(token in upper for token in ("REVIEW", "CHALLENGE", "CRS"))
+        and any(token in upper for token in ("TIME", "LENGTH", "DURATION"))
+    )
+
+
+def imported_challenge_length_seconds(play):
+    """Return DV Sport's challenge length, including metadata fallback.
+
+    Older rows may have a blank dvsport_challenge_length_seconds column even
+    though REVIEW TIME was preserved in dvsport_metadata.specialized.fields.
+    """
+    if play is None or not hasattr(play, "get"):
+        return None
+
+    direct = coerce_challenge_length_seconds(
+        play.get("dvsport_challenge_length_seconds")
+    )
+    if direct is not None:
+        return direct
+
+    metadata = _metadata_object(play)
+    specialized = metadata.get("specialized") if isinstance(metadata, dict) else None
+    if not isinstance(specialized, dict):
+        return None
+
+    fields = specialized.get("fields")
+    if isinstance(fields, dict):
+        preferred = [
+            "REVIEW TIME",
+            "CHALLENGE TIME",
+            "REVIEW LENGTH",
+            "CHALLENGE LENGTH",
+            "REVIEW DURATION",
+            "CHALLENGE DURATION",
+        ]
+        lookup = {clean_text(k).upper(): v for k, v in fields.items()}
+        for name in preferred:
+            parsed = coerce_challenge_length_seconds(lookup.get(name))
+            if parsed is not None:
+                return parsed
+
+        for key, value in fields.items():
+            if not _is_length_heading(key):
+                continue
+            parsed = coerce_challenge_length_seconds(value)
+            if parsed is not None:
+                return parsed
+
+    verbose = specialized.get("data_verbose") or specialized.get("DataVerbose") or []
+    if isinstance(verbose, list):
+        for entry in verbose:
+            if not isinstance(entry, dict):
+                continue
+            heading = (
+                entry.get("internalName")
+                or entry.get("internalname")
+                or entry.get("displayName")
+                or entry.get("DisplayName")
+                or entry.get("fieldName")
+                or entry.get("FieldName")
+                or entry.get("name")
+                or entry.get("Name")
+                or entry.get("label")
+                or entry.get("Label")
+            )
+            if not _is_length_heading(heading):
+                continue
+            for value_key in ("value", "Value", "displayValue", "DisplayValue", "text", "Text"):
+                parsed = coerce_challenge_length_seconds(entry.get(value_key))
+                if parsed is not None:
+                    return parsed
+
+    return None
+
+
+def resolve_challenge_length_seconds(play):
+    """Return the effective length used by Tag/Edit, Dashboard, and reports.
+
+    A coordinator-entered challenge_length_seconds value wins. Otherwise use
+    the DV Sport source value, including metadata fallback for older imports.
+    """
+    if play is None or not hasattr(play, "get"):
+        return None
+
+    stored = coerce_challenge_length_seconds(play.get("challenge_length_seconds"))
+    if stored is not None:
+        return stored
+
+    return imported_challenge_length_seconds(play)
+
+
+def challenge_length_override_state(play):
+    """Return True/False for an explicit length override, or None if unknown."""
+    metadata = _metadata_object(play)
+    if not isinstance(metadata, dict):
+        return None
+
+    overrides = metadata.get("volleyreview_overrides")
+    if not isinstance(overrides, dict) or "challenge_length" not in overrides:
+        return None
+
+    return bool(overrides.get("challenge_length"))
+
 def imported_fault_comment(play):
     """Return the DV Sport COMMENTS value stored with an imported Fault."""
     metadata = play.get("dvsport_metadata") if isinstance(play, dict) else None

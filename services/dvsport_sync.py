@@ -10,6 +10,8 @@ from requests.cookies import RequestsCookieJar
 
 from services.review_taxonomy import (
     canonical_outcome,
+    challenge_length_override_state,
+    imported_challenge_length_seconds,
     imported_challenge_result,
     normalize_outcome,
 )
@@ -3252,7 +3254,8 @@ def get_existing_play(
         .select(
             "id,dvsport_id,conference,match_date,match_name,play_type,"
             "set_number,score,dvsport_play_category,challenge_type,challenge_result,"
-            "crs_outcome,video_urls,dvsport_play_number,dvsport_source_url,"
+            "crs_outcome,challenge_length_seconds,dvsport_challenge_length_seconds,"
+            "review_status,video_urls,dvsport_play_number,dvsport_source_url,"
             "dvsport_full_game_url,dvsport_metadata"
         )
         .eq("dvsport_id", dvsport_id)
@@ -3309,7 +3312,8 @@ def existing_candidates_for_record(
         .select(
             "id,dvsport_id,conference,match_date,match_name,play_type,"
             "set_number,score,dvsport_play_category,challenge_type,challenge_result,"
-            "crs_outcome,video_urls,dvsport_play_number,dvsport_source_url,"
+            "crs_outcome,challenge_length_seconds,dvsport_challenge_length_seconds,"
+            "review_status,video_urls,dvsport_play_number,dvsport_source_url,"
             "dvsport_full_game_url,dvsport_metadata"
         )
         .eq("conference", conference)
@@ -3832,9 +3836,9 @@ def upsert_play(
     """
     Upsert without creating duplicate Challenge, POI, or FAULT rows.
 
-    DV Sport is allowed to seed the initial Challenge Outcome into crs_outcome.
-    After a coordinator changes that value in Tag/Edit, later syncs preserve the
-    manual override instead of replacing it with the source result.
+    DV Sport seeds Challenge Outcome and Challenge Length on import. Source-
+    derived values continue to refresh on later syncs. Once a coordinator
+    changes either value in Tag/Edit, the manual override is preserved.
     """
     incoming_dvsport_id = record["dvsport_id"]
 
@@ -3877,8 +3881,17 @@ def upsert_play(
         if is_challenge
         else ""
     )
+    incoming_dvsport_length = (
+        imported_challenge_length_seconds(database_record)
+        if is_challenge
+        else None
+    )
     if is_challenge and incoming_source_result:
         database_record["challenge_result"] = incoming_source_result
+    if is_challenge and incoming_dvsport_length is not None:
+        database_record["dvsport_challenge_length_seconds"] = (
+            incoming_dvsport_length
+        )
 
     if existing:
         # Never let a sparse/older DV Sport snapshot erase richer media
@@ -3934,6 +3947,54 @@ def upsert_play(
                     incoming_dvsport_outcome
                 )
 
+        if is_challenge:
+            existing_editable_length = to_int(
+                existing.get("challenge_length_seconds")
+            )
+            previous_dvsport_length = (
+                imported_challenge_length_seconds(existing)
+            )
+            length_override = challenge_length_override_state(existing)
+
+            # Migrate older rows that predate the explicit override marker.
+            # An untouched/Not Viewed challenge is source-controlled even if
+            # old sync logic left challenge_length_seconds stale. If the row
+            # has been reviewed and its editable length differs from the last
+            # DV Sport value, conservatively treat that difference as manual.
+            if length_override is None:
+                review_status = clean_text(existing.get("review_status")).upper()
+                reviewed = review_status not in {"", "NOT VIEWED"}
+                length_override = bool(
+                    reviewed
+                    and existing_editable_length is not None
+                    and previous_dvsport_length is not None
+                    and existing_editable_length != previous_dvsport_length
+                )
+
+            merged_metadata = database_record.get("dvsport_metadata")
+            if not isinstance(merged_metadata, dict):
+                merged_metadata = {}
+            overrides = merged_metadata.get("volleyreview_overrides")
+            if not isinstance(overrides, dict):
+                overrides = {}
+            overrides["challenge_length"] = bool(length_override)
+            merged_metadata["volleyreview_overrides"] = overrides
+            database_record["dvsport_metadata"] = merged_metadata
+
+            if incoming_dvsport_length is None:
+                # Do not let a sparse playlist erase a previously imported
+                # DV Sport length.
+                if previous_dvsport_length is not None:
+                    database_record[
+                        "dvsport_challenge_length_seconds"
+                    ] = previous_dvsport_length
+            elif not length_override:
+                # Source-controlled lengths always follow DV Sport, including
+                # repair of stale values left by the old importer.
+                database_record["challenge_length_seconds"] = (
+                    incoming_dvsport_length
+                )
+
         # If this was matched through media/play-number identity, writing
         # the incoming canonical dvsport_id migrates the legacy row in
         # place.  The exact-ID lookup above already proved the canonical
@@ -3953,14 +4014,22 @@ def upsert_play(
             existing_match_count,
         )
 
-    if (
-        is_challenge
-        and database_record.get("challenge_length_seconds") is None
-        and database_record.get("dvsport_challenge_length_seconds") is not None
-    ):
-        database_record["challenge_length_seconds"] = (
-            database_record.get("dvsport_challenge_length_seconds")
+    if is_challenge and incoming_dvsport_length is not None:
+        database_record["dvsport_challenge_length_seconds"] = (
+            incoming_dvsport_length
         )
+        database_record["challenge_length_seconds"] = (
+            incoming_dvsport_length
+        )
+        metadata = database_record.get("dvsport_metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        overrides = metadata.get("volleyreview_overrides")
+        if not isinstance(overrides, dict):
+            overrides = {}
+        overrides["challenge_length"] = False
+        metadata["volleyreview_overrides"] = overrides
+        database_record["dvsport_metadata"] = metadata
 
     if is_challenge and incoming_dvsport_outcome:
         database_record["crs_outcome"] = incoming_dvsport_outcome

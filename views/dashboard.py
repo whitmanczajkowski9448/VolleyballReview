@@ -8,6 +8,7 @@ from services.database import get_supabase
 from services.review_taxonomy import (
     imported_fault_category,
     normalize_challenge_category,
+    resolve_challenge_length_seconds,
     resolve_challenge_outcome,
     normalize_referee_judgment,
     normalize_review_status,
@@ -127,13 +128,11 @@ df["fault_category"] = df.apply(
     axis=1,
 )
 
-df["length"] = pd.to_numeric(
-    df["challenge_length_seconds"].where(
-        df["challenge_length_seconds"].notna(),
-        df["dvsport_challenge_length_seconds"],
-    ),
-    errors="coerce",
+df["length"] = df.apply(
+    lambda row: resolve_challenge_length_seconds(row),
+    axis=1,
 )
+df["length"] = pd.to_numeric(df["length"], errors="coerce")
 
 render_section_label("Dashboard Filters")
 conferences = sorted(df["conference_display"].dropna().unique().tolist())

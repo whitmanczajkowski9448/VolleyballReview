@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta
+import json
 
 import pandas as pd
 import streamlit as st
@@ -16,11 +17,13 @@ from services.review_taxonomy import (
     ORIGINAL_CALLS,
     fault_option_choices,
     imported_fault_category,
+    imported_challenge_length_seconds,
     REFEREE_JUDGMENTS,
     REVIEW_STATUS_CHOICES,
     normalize_challenge_category,
     normalize_original_call,
     normalize_outcome,
+    resolve_challenge_length_seconds,
     resolve_challenge_outcome,
     normalize_referee_judgment,
     normalize_review_status,
@@ -137,10 +140,30 @@ def initialize(key, value):
 
 
 def challenge_length_value(play):
-    value = play.get("challenge_length_seconds")
-    if value is None:
-        value = play.get("dvsport_challenge_length_seconds")
-    return value
+    return resolve_challenge_length_seconds(play)
+
+
+def metadata_with_length_override(play, is_override):
+    metadata = play.get("dvsport_metadata") if isinstance(play, dict) else None
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    else:
+        metadata = dict(metadata)
+
+    overrides = metadata.get("volleyreview_overrides")
+    if not isinstance(overrides, dict):
+        overrides = {}
+    else:
+        overrides = dict(overrides)
+
+    overrides["challenge_length"] = bool(is_override)
+    metadata["volleyreview_overrides"] = overrides
+    return metadata
 
 
 def queue_match_key(item):
@@ -726,6 +749,16 @@ def render_review_fragment():
             )
             return False
 
+        source_length_seconds = imported_challenge_length_seconds(play)
+        length_is_override = bool(
+            is_challenge
+            and length_seconds is not None
+            and (
+                source_length_seconds is None
+                or length_seconds != source_length_seconds
+            )
+        )
+
         # Preserve the existing database status value for compatibility while
         # the UI uses the clearer "Needs Additional Review" label.
         status_to_save = (
@@ -800,6 +833,10 @@ def render_review_fragment():
                 "challenge_outcome_detail": detail_to_save or None,
                 "crs_original_fault_changed": changed_to_save,
                 "challenge_length_seconds": length_seconds,
+                "dvsport_metadata": metadata_with_length_override(
+                    play,
+                    length_is_override,
+                ),
                 "referee_judgment": judgment or None,
                 "review_decision_correct": legacy_accuracy,
                 "is_starred": bool(is_starred),

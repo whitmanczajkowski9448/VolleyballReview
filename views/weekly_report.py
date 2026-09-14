@@ -10,6 +10,7 @@ from services.public_share import public_challenge_url
 from services.reporting import build_challenge_analytics_pdf
 from services.review_taxonomy import (
     normalize_challenge_category,
+    resolve_challenge_length_seconds,
     resolve_challenge_outcome,
     normalize_referee_judgment,
     normalize_review_status,
@@ -77,8 +78,7 @@ def format_seconds(value):
 
 
 def challenge_length_value(row):
-    value = row.get("challenge_length_seconds")
-    return value if value is not None and not pd.isna(value) else row.get("dvsport_challenge_length_seconds")
+    return resolve_challenge_length_seconds(row)
 
 
 def email_subject(start_date, end_date):
