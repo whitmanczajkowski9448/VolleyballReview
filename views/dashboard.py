@@ -81,14 +81,33 @@ def format_seconds(value):
     return f"{total // 60}:{total % 60:02d}"
 
 
+def load_all_plays(batch_size=1000):
+    """Load every play instead of stopping at Supabase's row limit."""
+    rows = []
+    start = 0
+
+    while True:
+        batch_response = (
+            supabase.table("plays")
+            .select("*")
+            .order("match_date", desc=False)
+            .range(start, start + batch_size - 1)
+            .execute()
+        )
+
+        batch = batch_response.data or []
+        rows.extend(batch)
+
+        if len(batch) < batch_size:
+            break
+
+        start += batch_size
+
+    return rows
+
+
 try:
-    response = (
-        supabase.table("plays")
-        .select("*")
-        .order("match_date", desc=False)
-        .execute()
-    )
-    rows = response.data or []
+    rows = load_all_plays()
 except Exception as exc:
     st.error("Could not load dashboard data.")
     st.exception(exc)
