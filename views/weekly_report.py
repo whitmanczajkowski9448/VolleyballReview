@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+import hashlib
 from urllib.parse import quote, urlencode
 
 import pandas as pd
@@ -93,6 +94,9 @@ def build_coordinator_body(
     *,
     report_start,
     report_end,
+    conferences,
+    play_types,
+    review_statuses,
     total_challenges,
     total_pois,
     total_faults,
@@ -115,6 +119,11 @@ def build_coordinator_body(
         "NCAA WOMEN'S VOLLEYBALL REVIEW",
         f"COORDINATOR REPORT  |  {report_start:%B %d, %Y} – {report_end:%B %d, %Y}",
         divider,
+        "",
+        "REPORT FILTERS",
+        f"Conferences  {', '.join(conferences) if conferences else 'None'}",
+        f"Play Types  {', '.join(play_types) if play_types else 'None'}",
+        f"Review Status  {', '.join(review_statuses) if review_statuses else 'None'}",
         "",
         "AT A GLANCE",
         (
@@ -590,10 +599,17 @@ else:
 # ============================================================
 
 render_section_label("Coordinator Email")
-subject = email_subject(report_start, report_end)
-body = build_coordinator_body(
+
+# Build the current email directly from the active date range + filters.
+# The editable email fields are intentionally stored in session_state, so
+# we use an explicit refresh action to replace any prior/manual draft.
+current_subject = email_subject(report_start, report_end)
+current_body = build_coordinator_body(
     report_start=report_start,
     report_end=report_end,
+    conferences=selected_conferences,
+    play_types=selected_types,
+    review_statuses=selected_statuses,
     total_challenges=total_challenges,
     total_pois=total_pois,
     total_faults=total_faults,
@@ -612,7 +628,55 @@ body = build_coordinator_body(
     special_rows=special_rows,
 )
 
+# Hash the generated content rather than only the selected filters. This also
+# detects changes caused by newly synced plays, edited review decisions, notes,
+# or other underlying data while the filters themselves remain unchanged.
+current_email_signature = hashlib.sha256(
+    f"{current_subject}\n{current_body}".encode("utf-8")
+).hexdigest()
+
+# First load after this feature is deployed: populate the draft from the
+# current report, even if older Streamlit widget state is still present.
+if "coordinator_email_generation_signature" not in st.session_state:
+    st.session_state["coordinator_email_subject"] = current_subject
+    st.session_state["coordinator_email_body"] = current_body
+    st.session_state["coordinator_email_generation_signature"] = current_email_signature
+
+email_is_stale = (
+    st.session_state.get("coordinator_email_generation_signature")
+    != current_email_signature
+)
+
 with st.container(border=True):
+    action_col, status_col = st.columns([1.25, 2.75])
+    with action_col:
+        refresh_email = st.button(
+            "Generate / Refresh Email",
+            type="primary",
+            use_container_width=True,
+            key="coordinator_generate_email",
+        )
+    with status_col:
+        if email_is_stale:
+            st.warning(
+                "The report selections or data have changed. Generate a new email to update the draft."
+            )
+        else:
+            st.success("Email draft matches the current report selections and data.")
+
+    if refresh_email:
+        st.session_state["coordinator_email_subject"] = current_subject
+        st.session_state["coordinator_email_body"] = current_body
+        st.session_state["coordinator_email_generation_signature"] = current_email_signature
+        email_is_stale = False
+        st.rerun()
+
+    st.caption(
+        f"Draft source: {report_start:%b %d, %Y} – {report_end:%b %d, %Y} • "
+        f"{', '.join(selected_conferences)} • {', '.join(selected_types)} • "
+        f"{', '.join(selected_statuses)}"
+    )
+
     recipient_col, cc_col = st.columns(2)
     with recipient_col:
         to_text = st.text_input(
@@ -629,12 +693,10 @@ with st.container(border=True):
 
     subject_text = st.text_input(
         "Subject",
-        value=subject,
         key="coordinator_email_subject",
     )
     body_text = st.text_area(
         "Email Body",
-        value=body,
         height=520,
         key="coordinator_email_body",
     )
