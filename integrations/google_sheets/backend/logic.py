@@ -164,14 +164,10 @@ def zip_name(play: dict[str, Any]) -> str:
 
 def info_text(play: dict[str, Any], angles: list[dict[str, str]], comments: list[dict[str, Any]]) -> str:
     keys = [
-        ("Play ID", "id"), ("Match Date", "match_date"), ("Conference", "conference"),
-        ("Match", "match_name"), ("Play Type", "play_type"), ("Set", "set_number"),
-        ("Score", "score"), ("Challenging Team", "challenging_team"),
-        ("Original Call", "crs_original_decision"), ("Challenge Outcome", "crs_outcome"),
-        ("Source Outcome", "challenge_result"), ("Outcome Detail", "challenge_outcome_detail"),
-        ("Referee Judgment", "referee_judgment"), ("Review Status", "review_status"),
-        ("Reviewer Notes", "reviewer_notes"), ("Weekly Summary Note", "weekly_summary_note"),
-        ("DV Sport ID", "dvsport_id"), ("DV Sport Play Number", "dvsport_play_number"),
+        ("Play ID", "id"), ("Match Date", "match_date"),
+        ("Conference", "conference"), ("Match", "match_name"),
+        ("Play Type", "play_type"), ("Set", "set_number"), ("Score", "score"),
+        ("DV Sport Play Number", "dvsport_play_number"), ("DV Sport ID", "dvsport_id"),
     ]
     lines = ["VOLLEYREVIEW PLAY INFORMATION", "=============================", ""]
     lines.extend(f"{label}: {clean(play.get(field)) or '—'}" for label, field in keys)
