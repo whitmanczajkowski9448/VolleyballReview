@@ -11,6 +11,7 @@ import time
 import tempfile
 import zipfile
 from functools import lru_cache
+from datetime import date
 from pathlib import Path
 from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 
@@ -20,6 +21,7 @@ from fastapi.background import BackgroundTasks
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from supabase import Client, create_client
+from dvsport_finder import search_matches, plays_in_match, import_play
 
 from logic import (
     clean, compact_metadata, info_text, parse_angles, valid_download_token, zip_name,
@@ -289,6 +291,25 @@ def make_zip(play: dict, angles: list[dict], comments: list[dict]) -> str:
         except Exception:
             cleanup_file(path)
             raise
+
+
+
+# Browse authorized DV Sport FULL GAME clips without grading them.
+@app.get("/api/v1/dvsport/matches", dependencies=[Depends(require_api_key)])
+def browse_dvsport_matches(date_from: date, date_to: date,
+                           conference: str = Query("", max_length=80),
+                           q: str = Query("", max_length=100)):
+    return search_matches(setting("DVSPORT_COOKIE"), date_from, date_to, conference, q)
+
+
+@app.get("/api/v1/dvsport/matches/{match_id}/plays", dependencies=[Depends(require_api_key)])
+def browse_dvsport_plays(match_id: str):
+    return plays_in_match(setting("DVSPORT_COOKIE"), match_id)
+
+
+@app.post("/api/v1/dvsport/matches/{match_id}/plays/{play_number}/import", dependencies=[Depends(require_api_key)])
+def import_dvsport_play(match_id: str, play_number: int):
+    return import_play(client(), setting("DVSPORT_COOKIE"), match_id, play_number)
 
 
 @app.get("/api/v1/plays/{play_id}/download")
