@@ -31,7 +31,7 @@ def group_full_games(items):
         url = dv.clean_text(item.get("Url"))
         if item.get("Type") != 0 or not url.upper().endswith(".DVPLAYLIST"):
             continue
-        m = re.search(r"/VIDEOS/(20\\d\\d)/([^/]+)/GAMES/", path, re.I)
+        m = re.search(r"/VIDEOS/([0-9]{4})/([^/]+)/GAMES/", path, re.I)
         if not m:
             continue
         parsed = dv.parse_full_game_playlist_title(item.get("Title"))
