@@ -29,8 +29,10 @@ function configureBackend(){
   const ui=SpreadsheetApp.getUi();
   const base=ui.prompt('Integration API','Paste the HTTPS base URL of your deployed VolleyReview API:',ui.ButtonSet.OK_CANCEL);
   if(base.getSelectedButton()!==ui.Button.OK)return;
-  const url=base.getResponseText().trim().replace(/\\/+$/,'');
-  if(!/^https:\/\/[\\w.-]+(?::\\d+)?$/.test(url)){ui.alert('Enter an HTTPS origin only.');return;}
+  const url=base.getResponseText().trim().replace(new RegExp('/+$'),'');
+  if(!url.startsWith('https://') || !url.slice(8) || url.slice(8).includes('/')){
+    ui.alert('Enter an HTTPS origin with no path.');return;
+  }
   const keyPrompt=ui.prompt('Integration key','Paste the separate SHEETS_INTEGRATION_KEY. NEVER use your Supabase service-role key.',ui.ButtonSet.OK_CANCEL);
   if(keyPrompt.getSelectedButton()!==ui.Button.OK)return;
   const key=keyPrompt.getResponseText().trim();
@@ -68,7 +70,7 @@ function text_(v){
   const s=String(v);return /^[=+@-]/.test(s)?"'"+s:s;
 }
 function link_(url,label){
-  if(!/^https:\/\//i.test(url||''))return '';
+  if(!String(url||'').startsWith('https://'))return '';
   const esc=s=>String(s||'').replace(/"/g,'""').replace(/[\\r\\n]/g,' ');
   return '=HYPERLINK("'+esc(url)+'","'+esc(label)+'")';
 }
