@@ -85,7 +85,7 @@ def refresh_media_url(url: str) -> str:
         return url
     cookie = setting("DVSPORT_COOKIE")
     if not cookie:
-        return url  # if already signed, it may still work; README explains setup
+        raise ValueError("DVSPORT_COOKIE is missing; an unsigned DV Sport video URL cannot be opened")
     source = urlunsplit((parts.scheme, parts.netloc, unquote(parts.path), "", ""))
     now = time.monotonic()
     with _sas_lock:
@@ -107,6 +107,8 @@ def refresh_media_url(url: str) -> str:
     signed = clean(data.get("Url") or data.get("url"))
     if not data.get("Success") or not signed:
         raise ValueError("DV Sport did not return a signed media URL")
+    if not re.search(r"(?:^|&)sig=[^&]+", urlsplit(signed).query, re.I):
+        raise ValueError("DV Sport returned an unsigned URL instead of a playable link")
     # A new signer must not be allowed to direct our downloader to an arbitrary host.
     approved_video_host(signed)
     with _sas_lock:
@@ -128,12 +130,11 @@ def get_angles(play: dict, *, refresh: bool = False) -> list[dict]:
     # or a ZIP is being generated; refreshing every angle for 4,000 plays takes hours.
     if not refresh:
         return angles
+    if not setting("DVSPORT_COOKIE"):
+        raise HTTPException(503, "DV Sport video authorization is not configured on Render (DVSPORT_COOKIE)")
     updated = []
     for angle in angles:
-        try:
-            url = refresh_media_url(angle["url"])
-        except (requests.RequestException, ValueError):
-            url = angle["url"]
+        url = refresh_media_url(angle["url"])
         updated.append({**angle, "url": url})
     return updated
 
@@ -147,7 +148,12 @@ def get_comments_for_play(play_id: str) -> list[dict]:
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "VolleyReview Sheets API"}
+    return {
+        "status": "ok",
+        "service": "VolleyReview Sheets API",
+        "dvSportVideoSigningConfigured": bool(setting("DVSPORT_COOKIE")),
+        "allowedMediaHostsConfigured": bool(setting("ALLOWED_MEDIA_HOSTS")),
+    }
 
 
 @app.get("/api/v1/plays", dependencies=[Depends(require_api_key)])
@@ -353,7 +359,10 @@ def download_play(play_id: str, background_tasks: BackgroundTasks,
     if not valid_download_token(play_id, expires, sig, signing_secret()):
         raise HTTPException(403, "Expired or invalid download link. Refresh the Google Sheet.")
     play = get_play(play_id)
-    angles = get_angles(play, refresh=True)
+    try:
+        angles = get_angles(play, refresh=True)
+    except (requests.RequestException, ValueError, OSError) as exc:
+        raise HTTPException(502, "DV Sport video authorization failed. Check the DVSPORT_COOKIE on Render.") from exc
     if not angles:
         raise HTTPException(404, "This play has no downloadable angles")
     comments = get_comments_for_play(play_id)
