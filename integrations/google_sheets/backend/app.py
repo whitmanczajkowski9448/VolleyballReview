@@ -13,18 +13,18 @@ import zipfile
 from functools import lru_cache
 from datetime import date
 from pathlib import Path
-from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
 
 import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.background import BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from supabase import Client, create_client
 from dvsport_finder import search_matches, plays_in_match, import_play
 
 from logic import (
-    clean, compact_metadata, info_text, parse_angles, valid_download_token, zip_name,
+    clean, compact_metadata, info_text, parse_angles, sign_download, valid_download_token, zip_name,
 )
 
 app = FastAPI(title="VolleyReview Sheets Integration", version="1.0")
@@ -114,7 +114,7 @@ def refresh_media_url(url: str) -> str:
     return signed
 
 
-def get_angles(play: dict) -> list[dict]:
+def get_angles(play: dict, *, refresh: bool = False) -> list[dict]:
     angles = parse_angles(play.get("video_urls"))
     if not angles:
         # Compatibility with older pre-video_urls installations.
@@ -124,6 +124,10 @@ def get_angles(play: dict) -> list[dict]:
             angles = parse_angles(rows)
         except Exception:
             return []
+    # Keep play-library listing fast. Refresh DV Sport SAS URLs only when a video is opened
+    # or a ZIP is being generated; refreshing every angle for 4,000 plays takes hours.
+    if not refresh:
+        return angles
     updated = []
     for angle in angles:
         try:
@@ -153,12 +157,23 @@ def list_plays(offset: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=50
            .range(offset, offset + limit).execute())
     rows = res.data or []
     output = []
+    base = public_url()
+    secret = signing_secret()
+    days = min(max(int(setting("DOWNLOAD_LINK_TTL_DAYS", "14")), 1), 30)
     for row in rows[:limit]:
-        output.append(compact_metadata(
-            row, get_angles(row), public_url(), signing_secret(),
-            min(max(int(setting("DOWNLOAD_LINK_TTL_DAYS", "14")), 1), 30),
+        metadata = compact_metadata(
+            row, get_angles(row), base, secret, days,
             setting("VOLLEYREVIEW_PLAY_URL_TEMPLATE"),
-        ))
+        )
+        # Provide signed, on-demand video links alongside the signed ZIP link.
+        # Raw Azure blob URLs may require a short-lived DV Sport SAS signature.
+        expires = int(time.time()) + days * 86400
+        token = sign_download(str(row["id"]), expires, secret)
+        play_id = quote(str(row["id"]), safe="")
+        for index, angle in enumerate(metadata["angles"]):
+            angle["url"] = (f"{base}/api/v1/plays/{play_id}/angles/{index}/watch"
+                            f"?expires={expires}&sig={token}")
+        output.append(metadata)
     return {
         "plays": output,
         "next_offset": offset + limit if len(rows) > limit else None,
@@ -312,13 +327,30 @@ def import_dvsport_play(match_id: str, play_number: int):
     return import_play(client(), setting("DVSPORT_COOKIE"), match_id, play_number)
 
 
+@app.get("/api/v1/plays/{play_id}/angles/{angle_index}/watch")
+def watch_angle(play_id: str, angle_index: int,
+                expires: int = Query(..., ge=1),
+                sig: str = Query(..., min_length=64, max_length=64)):
+    if not valid_download_token(play_id, expires, sig, signing_secret()):
+        raise HTTPException(403, "Expired or invalid video link. Refresh the Google Sheet.")
+    angles = get_angles(get_play(play_id))
+    if not (0 <= angle_index < len(angles)):
+        raise HTTPException(404, "Video angle not found")
+    try:
+        signed_url = refresh_media_url(angles[angle_index]["url"])
+        approved_video_host(signed_url)
+    except (requests.RequestException, ValueError, OSError) as exc:
+        raise HTTPException(502, "Could not retrieve the video from DV Sport") from exc
+    return RedirectResponse(signed_url, status_code=302)
+
+
 @app.get("/api/v1/plays/{play_id}/download")
 def download_play(play_id: str, background_tasks: BackgroundTasks,
                   expires: int = Query(..., ge=1), sig: str = Query(..., min_length=64, max_length=64)):
     if not valid_download_token(play_id, expires, sig, signing_secret()):
         raise HTTPException(403, "Expired or invalid download link. Refresh the Google Sheet.")
     play = get_play(play_id)
-    angles = get_angles(play)
+    angles = get_angles(play, refresh=True)
     if not angles:
         raise HTTPException(404, "This play has no downloadable angles")
     comments = get_comments_for_play(play_id)
