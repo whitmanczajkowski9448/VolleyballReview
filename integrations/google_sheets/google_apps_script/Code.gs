@@ -327,3 +327,197 @@ function openCommentsLog(){
   const book=SpreadsheetApp.getActiveSpreadsheet();
   book.setActiveSheet(ensureSheet_(book,'Comments Log'));
 }
+
+
+/**
+ * DIRECT ZIP EXPORT
+ * Fetches DV Sport camera files from the URLs in this spreadsheet and uses
+ * Google's Utilities.zip(). No VolleyReview/Render API request is made.
+ *
+ * Each user may optionally store a DV Sport login cookie in their *own*
+ * Apps Script UserProperties; never place cookies or keys in sheet cells.
+ * Google imposes a 50 MB response limit per UrlFetch request.
+ */
+const VR_ZIP={
+  maxClipBytes:48*1024*1024,
+  maxTotalBytes:85*1024*1024,
+  folder:'VolleyReview ZIP Downloads'
+};
+
+function configureDirectZipCookie(){
+  const ui=SpreadsheetApp.getUi();
+  const answer=ui.prompt('DV Sport authorization for direct ZIPs',
+    'Paste the full Cookie header from your authenticated DV Sport FilmRoom session. It is saved privately for your Google account in Apps Script User Properties, not in the sheet or GitHub. This is needed only when camera URLs are private.',
+    ui.ButtonSet.OK_CANCEL);
+  if(answer.getSelectedButton()!==ui.Button.OK)return;
+  const cookie=String(answer.getResponseText()||'').trim().replace(/^cookie:\s*/i,'');
+  if(cookie.length<12){ui.alert('No valid cookie was provided.');return;}
+  PropertiesService.getUserProperties().setProperty('VR_DVSPORT_COOKIE_ZIP',cookie);
+  ui.alert('Cookie saved for your Google account. Select a play row, then choose Download selected play ZIP (direct).');
+}
+
+function vrZipSafeSource_(value){
+  const url=String(value||'').trim();
+  const match=/^https:\/\/([a-z0-9.-]+)\//i.exec(url);
+  if(!match||!/^(?:dvsportreplay|dvsportreplaycentral)\.blob\.core\.windows\.net$/i.test(match[1]))
+    throw Error('Expected an authorized DV Sport Azure video URL. Unsupported link: '+url.slice(0,75));
+  return url;
+}
+
+function vrZipRowSources_(sh,row){
+  const width=sh.getLastColumn();
+  const headers=sh.getRange(4,1,1,width).getDisplayValues()[0];
+  const rich=sh.getRange(row,1,1,width).getRichTextValues()[0];
+  const formulas=sh.getRange(row,1,1,width).getFormulas()[0];
+  const sources=[];
+  headers.forEach(function(label,index){
+    if(!/^Angle \d+$/i.test(String(label||'')))return;
+    const link=rich[index]&&rich[index].getLinkUrl();
+    const formula=formulas[index]||'';
+    const match=/^=HYPERLINK\("((?:[^"]|"")*)"/i.exec(formula);
+    const url=link||(match&&match[1].replace(/""/g,'"'))||'';
+    if(/^https:\/\/(?:dvsportreplay|dvsportreplaycentral)\.blob\.core\.windows\.net\//i.test(url)){
+      const name=String(rich[index]&&rich[index].getText()||label)
+        .replace(/^▶\s*/,'').trim();
+      sources.push({name:name||label,url:url});
+    }
+  });
+  return sources;
+}
+
+function vrZipSourcesForPlay_(book,sh,row,id){
+  let sources=vrZipRowSources_(sh,row);
+  if(sources.length)return sources;
+  const all=book.getSheetByName('All Plays');
+  if(all&&all!==sh&&all.getLastRow()>4){
+    const found=all.getRange(5,3,all.getLastRow()-4,1)
+      .createTextFinder(id).matchEntireCell(true).findNext();
+    if(found)sources=vrZipRowSources_(all,found.getRow());
+    if(sources.length)return sources;
+  }
+  const cache=book.getSheetByName('_ZIP Sources');
+  if(cache&&cache.getLastRow()>1){
+    const found=cache.getRange(2,1,cache.getLastRow()-1,1)
+      .createTextFinder(id).matchEntireCell(true).findNext();
+    if(found){
+      const value=cache.getRange(found.getRow(),2).getValue();
+      const saved=JSON.parse(String(value||'[]'));
+      sources=saved.filter(function(a){return a&&a.url&&a.name;});
+    }
+  }
+  return sources;
+}
+
+function vrZipSignedSource_(url){
+  url=vrZipSafeSource_(url);
+  if(/[?&]sig=/i.test(url))return url;  // Already-authorized Azure SAS URL.
+  const cookie=PropertiesService.getUserProperties().getProperty('VR_DVSPORT_COOKIE_ZIP');
+  if(!cookie)return url; // Public URLs can be fetched without a cookie.
+  const original=decodeURIComponent(url.split('?')[0]);
+  const response=UrlFetchApp.fetch('https://filmroom.dvsport360.com/VideoPlayer/GetSasUrl',{
+    method:'post',
+    payload:{url:original},
+    headers:{
+      'Origin':'https://filmroom.dvsport360.com',
+      'Referer':'https://filmroom.dvsport360.com/',
+      'X-Requested-With':'XMLHttpRequest',
+      'User-Agent':'Mozilla/5.0',
+      'Cookie':cookie
+    },
+    muteHttpExceptions:true,followRedirects:false
+  });
+  if(response.getResponseCode()!==200)throw Error(
+    'DV Sport authorization failed (HTTP '+response.getResponseCode()+'). Update your cookie from FilmRoom.');
+  const payload=JSON.parse(response.getContentText());
+  const signed=String(payload.Url||payload.url||'').trim();
+  if(!payload.Success||!signed)throw Error('DV Sport did not authorize this camera. Refresh your cookie.');
+  return vrZipSafeSource_(signed);
+}
+
+function vrZipCleanName_(name){
+  return String(name||'camera').replace(/[^a-z0-9._ -]/gi,'_')
+    .replace(/^\.+/,'').trim().slice(0,65)||'camera';
+}
+
+function vrZipFolder_(){
+  const existing=DriveApp.getFoldersByName(VR_ZIP.folder);
+  return existing.hasNext()?existing.next():DriveApp.createFolder(VR_ZIP.folder);
+}
+
+function downloadSelectedPlayZip(){
+  const book=SpreadsheetApp.getActiveSpreadsheet();
+  const sh=book.getActiveSheet();
+  const ui=SpreadsheetApp.getUi();
+  const selected=sh.getActiveRange();
+  if(!V.tabs.includes(sh.getName())||!selected||selected.getRow()<5){
+    ui.alert('Select a play row in All Plays, Challenges, Faults, POIs, or another play tab first.');
+    return;
+  }
+  const row=selected.getRow();
+  const id=String(sh.getRange(row,3).getDisplayValue()||'').trim();
+  if(!id){ui.alert('The selected row has no Play ID.');return;}
+  const lock=LockService.getDocumentLock();
+  if(!lock.tryLock(1000)){ui.alert('Another VolleyReview operation is running. Try again shortly.');return;}
+  try{
+    const sources=vrZipSourcesForPlay_(book,sh,row,id);
+    if(!sources.length)throw Error('No original DV Sport camera URLs found for play '+id+'. Refresh all plays, then retry.');
+    const blobs=[];
+    let totalBytes=0;
+    const note=[
+      'VOLLEYREVIEW — PLAY '+id,
+      'Date: '+sh.getRange(row,7).getDisplayValue(),
+      'Match: '+sh.getRange(row,9).getDisplayValue(),
+      'Play number: '+sh.getRange(row,14).getDisplayValue(),
+      'Camera count: '+sources.length
+    ].join('\n')+'\n';
+    blobs.push(Utilities.newBlob(note,'text/plain','Play_Information.txt'));
+    const used={};
+    sources.forEach(function(camera,index){
+      const signed=vrZipSignedSource_(camera.url);
+      const response=UrlFetchApp.fetch(signed,{
+        method:'get',
+        muteHttpExceptions:true,
+        followRedirects:false
+      });
+      const status=response.getResponseCode();
+      if(status<200||status>=300){
+        if((status===401||status===403)&&
+           !PropertiesService.getUserProperties().getProperty('VR_DVSPORT_COOKIE_ZIP'))
+          throw Error('This DV Sport video is private. Choose VolleyReview > Set DV Sport cookie for ZIPs, then retry.');
+        throw Error('DV Sport video '+(index+1)+' returned HTTP '+status+'. Check your FilmRoom authorization.');
+      }
+      const headers=response.getHeaders();
+      const headerType=String(headers['Content-Type']||headers['content-type']||'').toLowerCase();
+      if(/text\/html|application\/json|xml|mpegurl/.test(headerType))
+        throw Error('Camera '+(index+1)+' returned a web page or playlist instead of a video.');
+      const bytes=response.getContent().length;
+      if(bytes>VR_ZIP.maxClipBytes)throw Error('Camera '+(index+1)+' exceeds the Google Apps Script 50 MB download limit. Use the Render ZIP downloader for larger videos.');
+      totalBytes+=bytes;
+      if(totalBytes>VR_ZIP.maxTotalBytes)throw Error('All cameras total more than 85 MB. Google Apps Script cannot reliably ZIP a play this large; use the Render ZIP downloader.');
+      let name=vrZipCleanName_(camera.name).replace(/\.(?:mp4|mov|webm)$/i,'');
+      if(!name)name='camera';
+      const stem=String(index+1).padStart(2,'0')+'_'+name;
+      used[stem]=(used[stem]||0)+1;
+      name=stem+(used[stem]>1?'_'+used[stem]:'')+'.mp4';
+      blobs.push(response.getBlob().setName(name));
+    });
+    const date=vrZipCleanName_(sh.getRange(row,7).getDisplayValue()||'date');
+    const name=date+'_Play_'+vrZipCleanName_(id)+'.zip';
+    const file=vrZipFolder_().createFile(Utilities.zip(blobs,name));
+    const all=book.getSheetByName('All Plays');
+    if(all&&all.getLastRow()>4){
+      const found=all.getRange(5,3,all.getLastRow()-4,1)
+        .createTextFinder(id).matchEntireCell(true).findNext();
+      if(found){
+        all.getRange(found.getRow(),1).setFormula('=HYPERLINK("'+file.getUrl().replace(/"/g,'""')+'","⬇ ZIP ready")');
+        all.getRange(found.getRow(),1).setNote('Google Drive ZIP · '+sources.length+' camera angles · generated '+new Date());
+      }
+    }
+    book.toast('ZIP created in Google Drive: '+name,'VolleyReview ZIP',8);
+    ui.alert('ZIP created: '+name+'\n'+sources.length+' camera angles\n\nOpen All Plays, column A, or find it in your Google Drive folder "'+VR_ZIP.folder+'".');
+    return file.getUrl();
+  }catch(err){
+    ui.alert('ZIP could not be created:\n'+err.message);
+    throw err;
+  }finally{lock.releaseLock();}
+}
