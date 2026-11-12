@@ -6,8 +6,8 @@
 const V={
   tabs:['All Plays','Saved Plays','Challenges','Faults','POIs',
         'Touch','In-Out','Net','Attack Line','Service-Center Line','Other-Uncategorized'],
-  fixed:['Download ZIP','Watch Video','Play ID','Date','Conference','Match','Type','Category','Set','Score','Play #'],
-  end:['Latest Comment','Comments','New Comment','Tags']
+  fixed:['Download ZIP','Watch Video','Play ID','New Comment','Latest Comment','Comments','Date','Conference','Match','Type','Category','Set','Score','Play #'],
+  end:['Tags']
 };
 
 function onOpen(){
@@ -122,15 +122,16 @@ function renderView_(book,tab,plays,index,angles,time,drafts){
     const c=index[String(p.id)]||{count:0,latest:null};
     const first=(p.angles||[])[0];
     const record=[link_(p.download_url,'Download all'),first?link_(first.url,'Watch'):'',
-      text_(p.id),text_(p.match_date),text_(p.conference),text_(p.match_name),
+      text_(p.id),(drafts||{})[String(p.id)]||'',
+      c.latest?text_(c.latest.comment_text):'',c.count,
+      text_(p.match_date),text_(p.conference),text_(p.match_name),
       text_(p.play_type),text_(p.category),text_(p.set_number),text_(p.score),
       text_(p.dvsport_play_number)];
     for(let i=0;i<angles;i++){
       const a=(p.angles||[])[i];
       record.push(a?link_(a.url,a.name||('Angle '+(i+1))):'');
     }
-    record.push(c.latest?text_(c.latest.comment_text):'',c.count,
-      (drafts||{})[String(p.id)]||'',c.latest?text_((c.latest.tags||[]).join(', ')):'');
+    record.push(c.latest?text_((c.latest.tags||[]).join(', ')):'');
     return record;
   });
   const currentFilter=sh.getFilter();if(currentFilter)currentFilter.remove();
@@ -146,16 +147,17 @@ function renderView_(book,tab,plays,index,angles,time,drafts){
   if(rows.length){
     sh.getRange(5,1,rows.length,n).setValues(rows).setVerticalAlignment('middle');
     sh.getRange(5,1,rows.length,2).setFontColor('#1867A3');
-    sh.getRange(5,12,rows.length,angles).setFontColor('#1867A3');
+    sh.getRange(5,V.fixed.length+1,rows.length,angles).setFontColor('#1867A3');
     sh.getRange(5,headings.indexOf('New Comment')+1,rows.length,1).setBackground('#FFF4DA');
     sh.getRange(4,1,rows.length+1,n).createFilter();
   }
   sh.getRange(4,headings.indexOf('New Comment')+1).setNote('Enter a comment in the yellow cell and press Enter. First enable the automatic comment trigger.');
-  sh.setFrozenRows(4);sh.setFrozenColumns(3);
-  sh.setColumnWidth(1,130);sh.setColumnWidth(2,110);sh.setColumnWidth(3,218);
-  sh.setColumnWidth(4,110);sh.setColumnWidth(5,130);sh.setColumnWidth(6,285);
-  sh.setColumnWidths(7,5,100);
-  sh.setColumnWidths(12,angles,155);
+  sh.setFrozenRows(4);sh.setFrozenColumns(4);
+  sh.setColumnWidth(1,130);sh.setColumnWidth(2,110);sh.setColumnWidth(3,125);
+  sh.setColumnWidth(4,330);sh.setColumnWidth(5,380);sh.setColumnWidth(6,100);
+  sh.setColumnWidth(7,110);sh.setColumnWidth(8,130);sh.setColumnWidth(9,285);
+  sh.setColumnWidths(10,5,105);
+  sh.setColumnWidths(V.fixed.length+1,angles,155);
   sh.setColumnWidth(headings.indexOf('Latest Comment')+1,380);
   sh.setColumnWidth(headings.indexOf('New Comment')+1,330);
   sh.setColumnWidth(headings.indexOf('Tags')+1,175);
