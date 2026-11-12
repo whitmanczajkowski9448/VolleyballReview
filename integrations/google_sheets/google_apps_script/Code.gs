@@ -16,6 +16,9 @@ function onOpen(){
     .addItem('2. Refresh all plays','syncNow')
     .addItem('3. Enable automatic refresh and comments','installTriggers')
     .addSeparator()
+    .addItem('Download selected play ZIP (direct)','downloadSelectedPlayZip')
+    .addItem('Set DV Sport cookie for ZIPs','configureDirectZipCookie')
+    .addSeparator()
     .addItem('Add comment to selected play','addCommentToSelectedPlay')
     .addItem('Open Comments Log','openCommentsLog')
     .addSeparator()
@@ -114,14 +117,14 @@ function drafts_(book){
   });
   return drafts;
 }
-function renderView_(book,tab,plays,index,angles,time,drafts){
+function renderView_(book,tab,plays,index,angles,time,drafts,savedZipLinks){
   const sh=ensureSheet_(book,tab);
   const filtered=plays.filter(p=>tabMatch_(tab,p));
   const headings=V.fixed.concat(Array.from({length:angles},(_,i)=>'Angle '+(i+1)),V.end);
   const rows=filtered.map(p=>{
     const c=index[String(p.id)]||{count:0,latest:null};
     const first=(p.angles||[])[0];
-    const record=[link_(p.download_url,'Download all'),first?link_(first.url,'Watch'):'',
+    const record=[(savedZipLinks||{})[String(p.id)]||'Select row → ZIP menu',first?link_(first.url,'Watch'):'',
       text_(p.id),(drafts||{})[String(p.id)]||'',
       c.latest?text_(c.latest.comment_text):'',c.count,
       text_(p.match_date),text_(p.conference),text_(p.match_name),
@@ -195,7 +198,7 @@ function renderGuide_(book,total,comments,time){
     ['COMMENTS',String(comments)+' comments'],
     ['LAST REFRESH',time],
     ['WATCH','Open a play tab. Click Watch or a named camera angle.'],
-    ['DOWNLOAD','Click Download all for a ZIP of available camera angles.'],
+    ['DOWNLOAD','Select a play row, then VolleyReview > Download selected play ZIP (direct). The ZIP is saved to your Google Drive and linked in column A.'],
     ['COMMENT','Enter text into the yellow New Comment cell and press Enter.'],
     ['FIND & IMPORT','Open the Find & Import tab; search by date/conference/teams, choose a match and PLAY #.'],
     ['SAVED PLAYS','A newly imported non-flagged play appears under Saved Plays.'],
@@ -206,15 +209,52 @@ function renderGuide_(book,total,comments,time){
   sh.setColumnWidth(1,190);sh.setColumnWidth(2,700);
   sh.setRowHeights(7,6,48);
 }
+
+/**
+ * Keep Drive ZIP links and original DV Sport camera URLs across sheet refreshes.
+ * The ZIP export itself never calls the VolleyReview Render API.
+ */
+function savedZipLinks_(book){
+  const sh=book.getSheetByName('All Plays'),saved={};
+  if(!sh||sh.getLastRow()<5)return saved;
+  const count=sh.getLastRow()-4;
+  const ids=sh.getRange(5,3,count,1).getDisplayValues();
+  const formula=sh.getRange(5,1,count,1).getFormulas();
+  ids.forEach(function(r,i){
+    if(r[0]&&/^=HYPERLINK\("https:\/\/drive\.google\.com\//i.test(formula[i][0]||''))
+      saved[String(r[0])]=formula[i][0];
+  });
+  return saved;
+}
+function storeZipSources_(book,plays){
+  const sh=ensureSheet_(book,'_ZIP Sources');
+  const rows=plays.map(function(p){
+    const angles=(p.angles||[]).map(function(a){
+      return {name:a.name,url:a.source_url||''};
+    }).filter(function(a){return /^https:\/\/dvsport[a-z0-9-]*\.blob\.core\.windows\.net\//i.test(a.url);});
+    return [String(p.id),JSON.stringify(angles)];
+  });
+  sh.clearContents();
+  if(sh.getMaxRows()<rows.length+1)sh.insertRowsAfter(sh.getMaxRows(),rows.length+1-sh.getMaxRows());
+  sh.getRange('A1:B1').setValues([['Play ID','Original DV Sport camera URLs (ZIP only)']]);
+  if(rows.length)sh.getRange(2,1,rows.length,2).setValues(rows);
+  if(!sh.isSheetHidden()){
+    if(book.getActiveSheet().getSheetId()===sh.getSheetId())book.setActiveSheet(book.getSheetByName('All Plays'));
+    sh.hideSheet();
+  }
+}
+
 function syncNow(){
   const lock=LockService.getDocumentLock();
   if(!lock.tryLock(20000))throw Error('A VolleyReview operation is already running');
   try{
     const plays=getAll_('plays'),comments=getAll_('comments'),book=SpreadsheetApp.getActiveSpreadsheet();
     const draft=drafts_(book),index=commentIndex_(comments);
+    const savedZipLinks=savedZipLinks_(book);
+    storeZipSources_(book,plays);
     const maxAngles=Math.max(1,...plays.map(p=>Math.min((p.angles||[]).length,30)));
     const time=Utilities.formatDate(new Date(),book.getSpreadsheetTimeZone(),'yyyy-MM-dd HH:mm');
-    V.tabs.forEach(tab=>renderView_(book,tab,plays,index,maxAngles,time,draft[tab]));
+    V.tabs.forEach(tab=>renderView_(book,tab,plays,index,maxAngles,time,draft[tab],savedZipLinks));
     renderComments_(book,comments,plays);renderGuide_(book,plays.length,comments.length,time);
     book.toast('Loaded '+plays.length+' plays and '+comments.length+' comments','VolleyReview',6);
   }finally{lock.releaseLock();}
