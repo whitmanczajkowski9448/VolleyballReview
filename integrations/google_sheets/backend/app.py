@@ -171,6 +171,9 @@ def list_plays(offset: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=50
         token = sign_download(str(row["id"]), expires, secret)
         play_id = quote(str(row["id"]), safe="")
         for index, angle in enumerate(metadata["angles"]):
+            # Keep the original DV Sport source for direct Google Apps Script ZIP exports.
+            # The visible watch URL remains the authenticated proxy link.
+            angle["source_url"] = angle["url"]
             angle["url"] = (f"{base}/api/v1/plays/{play_id}/angles/{index}/watch"
                             f"?expires={expires}&sig={token}")
         output.append(metadata)
