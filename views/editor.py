@@ -200,14 +200,32 @@ def queue_play_label(item, position, total):
 # LOAD + NORMALIZE
 # ============================================================
 
+def load_all_plays(batch_size=1000):
+    """Load all plays, not just Supabase's default first 1,000 rows."""
+    rows = []
+    start = 0
+
+    while True:
+        response = (
+            supabase.table("plays")
+            .select("*")
+            .order("match_date", desc=True)
+            .order("id", desc=True)
+            .range(start, start + batch_size - 1)
+            .execute()
+        )
+        batch = response.data or []
+        rows.extend(batch)
+
+        if len(batch) < batch_size:
+            break
+        start += batch_size
+
+    return rows
+
+
 try:
-    response = (
-        supabase.table("plays")
-        .select("*")
-        .order("match_date", desc=True)
-        .execute()
-    )
-    plays = response.data or []
+    plays = load_all_plays()
 except Exception as exc:
     st.error("Could not load plays.")
     st.exception(exc)
