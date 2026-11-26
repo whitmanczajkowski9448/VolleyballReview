@@ -14,7 +14,7 @@ from datetime import datetime
 from getpass import getpass
 from pathlib import Path
 
-from supabase import create_client
+from services.database import get_database
 
 from services.dvsport_sync import (
     DEFAULT_END_DATE,
@@ -38,28 +38,6 @@ def load_secrets():
 
     with SECRETS_FILE.open("rb") as file:
         return tomllib.load(file)
-
-
-def get_supabase_client(secrets):
-    url = str(
-        os.environ.get("SUPABASE_URL")
-        or secrets.get("SUPABASE_URL")
-        or ""
-    ).strip()
-
-    key = str(
-        os.environ.get("SUPABASE_KEY")
-        or secrets.get("SUPABASE_KEY")
-        or ""
-    ).strip()
-
-    if not url or not key:
-        raise RuntimeError(
-            "SUPABASE_URL and SUPABASE_KEY must be available in "
-            ".streamlit/secrets.toml or environment variables."
-        )
-
-    return create_client(url, key)
 
 
 def get_dvsport_cookie(secrets):
@@ -124,7 +102,7 @@ def main():
     args = parser.parse_args()
 
     secrets = load_secrets()
-    supabase = get_supabase_client(secrets)
+    supabase = get_database()
     cookie = get_dvsport_cookie(secrets)
 
     print("=" * 72)

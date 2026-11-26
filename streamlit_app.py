@@ -1,11 +1,7 @@
 import streamlit as st
 
-from services.auth import (
-    refresh_auth_state,
-    render_login,
-    sign_out,
-)
-from services.public_share import render_public_challenge
+from services.auth import refresh_auth_state
+from services.database import database_path
 from services.ui import (
     inject_global_css,
     render_sidebar_brand,
@@ -23,25 +19,8 @@ st.set_page_config(
 inject_global_css()
 
 
-# A signed challenge URL is intentionally available without login. The token
-# grants read-only access to one Challenge record only.
-public_challenge_token = str(
-    st.query_params.get("challenge", "")
-    or ""
-).strip()
-
-if public_challenge_token:
-    render_public_challenge(public_challenge_token)
-    st.stop()
-
-
 auth_user = refresh_auth_state()
-
-if auth_user is None:
-    render_login()
-    st.stop()
-
-role = auth_user["role"]
+role = auth_user['role']
 
 render_sidebar_brand()
 
@@ -85,31 +64,17 @@ if role == "admin":
         icon=":material/sync:",
     )
 
-    manage_users_page = st.Page(
-        "views/manage_users.py",
-        title="Manage Users",
-        icon=":material/manage_accounts:",
-    )
-
     navigation_groups["REVIEW CENTER"].append(editor_page)
     navigation_groups["REPORTING"] = [coordinator_report_page]
-    navigation_groups["SYSTEM"] = [dvsport_sync_page, manage_users_page]
+    navigation_groups["SYSTEM"] = [dvsport_sync_page]
 
 navigation = st.navigation(navigation_groups)
 
 with st.sidebar:
     st.divider()
-    role_label = "Admin" if role == "admin" else "Viewer"
-    st.caption(f"Signed in as {auth_user.get('email', '')}")
-    st.caption(f"Access: {role_label}")
-
-    if st.button(
-        "Log Out",
-        use_container_width=True,
-        key="volleyreview_logout",
-    ):
-        sign_out()
-        st.rerun()
+    st.caption('Local owner • SQLite')
+    st.caption(str(database_path()))
+    st.caption('Public sharing is disabled in local mode.')
 
 render_sidebar_footer()
 navigation.run()
